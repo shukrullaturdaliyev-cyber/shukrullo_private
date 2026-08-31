@@ -1,5 +1,5 @@
 /* =============================================================================
-   umarkin's personal zettelkasten
+   Shukrullo's personal zettelkasten
    Vanilla JS single-page app. No build step. Sections in this file:
      1. utilities            5. work: overview / 1-1s
      2. storage + sync       6. reports (CSV engines)
@@ -213,7 +213,7 @@ const PASS_KEY = 'desk:pass';
 
 const DEFAULTS = () => ({
   settings: {
-    name: 'Umar',
+    name: 'Shukrullo',
     currency: 'UZS',
     semStart: '',
     semEnd: '',
@@ -282,15 +282,15 @@ function saveCollection(name, immediate = false) {
   if (!REMOTE) { setSync('local'); return; }
   clearTimeout(pending.get(name));
   const push = async () => {
+    pending.delete(name); // clear first: the pill below asks whether anything is still queued
     setSync('saving');
     try {
       await api('/data/' + name, { method: 'PUT', body: JSON.stringify(DB[name]) });
-      if (![...pending.values()].length) setSync('synced');
-      else setSync('saving');
+      setSync(pending.size ? 'saving' : 'synced');
     } catch (err) {
       setSync('error', String(err.message || err));
       toast('Could not sync ' + name + ' — kept on this device.', 'bad');
-    } finally { pending.delete(name); }
+    }
   };
   if (immediate) { push(); return; }
   pending.set(name, setTimeout(push, 700));
@@ -429,7 +429,7 @@ function renderLogin(message = '') {
       </div>
       <div class="art">${goldenSVG()}</div>
       <div>
-        <h1 class="title">umarkin's personal<br>zettelkasten</h1>
+        <h1 class="title">Shukrullo's personal<br>zettelkasten</h1>
         <div class="tagline">a desk for the department and the degree</div>
         <div class="today">${esc(new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))}</div>
       </div>
@@ -3426,7 +3426,7 @@ function renderSettings(view) {
           <label class="f"><span>Semester end</span><input id="s_se" type="date" value="${attr(s.semEnd)}"></label>
         </div>
         <label class="f"><span>Konspekty root folder</span><input id="s_root" value="${attr(s.konspektyRoot)}" list="folderlist"></label>
-        <label class="f"><span>cal.com link or username</span><input id="s_cal" value="${attr(s.calcom)}" placeholder="umarkin"></label>
+        <label class="f"><span>cal.com link or username</span><input id="s_cal" value="${attr(s.calcom)}" placeholder="shukrullo"></label>
         ${folderDatalist()}
         <button class="btn primary" id="savesettings">Save settings</button>`)}
 

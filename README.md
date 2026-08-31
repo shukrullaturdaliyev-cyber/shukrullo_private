@@ -1,4 +1,4 @@
-# umarkin's personal zettelkasten
+# Shukrullo's personal zettelkasten
 
 A private, single-user operations dashboard with two faces and a set of shared modules.
 

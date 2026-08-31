@@ -2,8 +2,8 @@
    fetch('/_seed.js').then(r=>r.text()).then(eval)  */
 (function () {
   DB.settings = Object.assign(DB.settings, {
-    name: 'Umar', currency: 'UZS', semStart: '2026-09-01', semEnd: '2026-12-20',
-    konspektyRoot: 'NewUU', calcom: 'umarkin', hiddenSources: [], collapsedFolders: [],
+    name: 'Shukrullo', currency: 'UZS', semStart: '2026-09-01', semEnd: '2026-12-20',
+    konspektyRoot: 'NewUU', calcom: 'shukrullo', hiddenSources: [], collapsedFolders: [],
   });
 
   const d = (n) => { const x = new Date(); x.setDate(x.getDate() + n); return toISO(x); };
