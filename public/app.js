@@ -412,10 +412,7 @@ function goldenSVG(W = 880, H = 544) {
 const LOGO_SCHOOL = `<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
   <path d="M20 3 34 9v12c0 8-6 13.5-14 16C12 34.5 6 29 6 21V9l14-6Z" stroke="#f7e9df" stroke-width="1.6" opacity=".9"/>
   <path d="M13 24c1.9 1.4 4 2.1 6.3 2.1 3.2 0 5-1.3 5-3.2 0-4.6-11-2.2-11-8.4 0-3 2.6-5 6.6-5 2.2 0 4.2.6 5.8 1.7" stroke="#f7e9df" stroke-width="1.7" stroke-linecap="round"/></svg>`;
-const LOGO_UNI = `<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M4 15 20 7l16 8-16 8-16-8Z" stroke="#f7e9df" stroke-width="1.6" stroke-linejoin="round"/>
-  <path d="M10 19v8c0 2.8 4.5 5 10 5s10-2.2 10-5v-8" stroke="#f7e9df" stroke-width="1.6"/>
-  <path d="M33 16v8" stroke="#f7e9df" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+const LOGO_UNI = `<img src="/assets/cau.png" alt="Central Asian University" class="logo-img">`;
 
 function renderLogin(message = '') {
   document.documentElement.setAttribute('data-theme', 'work');

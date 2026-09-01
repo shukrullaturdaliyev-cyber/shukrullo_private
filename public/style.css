@@ -326,6 +326,7 @@ table.data td.n, table.data th.n { text-align: right; font-family: var(--mono); 
   font-size: 12px; letter-spacing: .1em; text-transform: uppercase; opacity: .92;
 }
 .login .logos .logo svg { height: 34px; width: 34px; }
+.login .logos .logo-img { height: 23px; width: auto; display: block; }
 .login .art { flex: 1; display: flex; align-items: center; justify-content: center; padding: 18px 0; }
 .login .art svg { width: 100%; max-width: 560px; height: auto; }
 .login h1.title { font-family: var(--serif); font-weight: 500; font-size: 44px; line-height: 1.05; letter-spacing: -0.01em; }
