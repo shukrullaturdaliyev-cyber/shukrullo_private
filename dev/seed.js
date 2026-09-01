@@ -3,7 +3,7 @@
 (function () {
   DB.settings = Object.assign(DB.settings, {
     name: 'Shukrullo', currency: 'UZS', semStart: '2026-09-01', semEnd: '2026-12-20',
-    konspektyRoot: 'NewUU', calcom: 'shukrullo', hiddenSources: [], collapsedFolders: [],
+    konspektyRoot: 'CAU', calcom: 'shukrullo', hiddenSources: [], collapsedFolders: [],
   });
 
   const d = (n) => { const x = new Date(); x.setDate(x.getDate() + n); return toISO(x); };
@@ -70,11 +70,11 @@
   mk('Department priorities', 'Work', '# Priorities\n\n- Reading pacing across all groups\n- A real observation rubric\n\nSee [[Observation rubric draft]] and [[Weekly exam ritual]].\n\n#work #planning');
   mk('Observation rubric draft', 'Work', 'Four lines only: clarity, pacing, error handling, student talk time.\n\nLinks back to [[Department priorities]].');
   mk('Weekly exam ritual', 'Work/Rituals', 'Export Monday, upload to the desk, read the findings, book the two worst 1-1s.\n\n#ritual');
-  mk('MATH-201 Lecture 1', 'NewUU/MATH-201', '# Vector spaces\n\nAxioms, span, independence. The pivot argument is the whole lecture.\n\n#konspekt');
-  mk('MATH-201 Lecture 2', 'NewUU/MATH-201', '# Linear maps\n\nMatrix of a map depends on the basis. [[MATH-201 Lecture 1]]');
-  mk('CS-210 Induction', 'NewUU/CS-210', 'Strong induction template and three worked examples.\n\n#konspekt');
+  mk('MATH-201 Lecture 1', 'CAU/MATH-201', '# Vector spaces\n\nAxioms, span, independence. The pivot argument is the whole lecture.\n\n#konspekt');
+  mk('MATH-201 Lecture 2', 'CAU/MATH-201', '# Linear maps\n\nMatrix of a map depends on the basis. [[MATH-201 Lecture 1]]');
+  mk('CS-210 Induction', 'CAU/CS-210', 'Strong induction template and three worked examples.\n\n#konspekt');
   mk('Inbox scratch', 'Inbox', 'Random thought: ask about the evening slot move.\n\nMissing link test: [[Not a real note]]');
-  mk('Whiteboard 1', 'NewUU/MATH-201', JSON.stringify({ type: 'excalidraw', version: 2, source: 'seed', elements: [], appState: {} }), 'excalidraw');
+  mk('Whiteboard 1', 'CAU/MATH-201', JSON.stringify({ type: 'excalidraw', version: 2, source: 'seed', elements: [], appState: {} }), 'excalidraw');
 
   const examCSV = (rows) => 'Student,Score,Group,Exam\n' + rows.join('\n');
   const names = ['Ali Karimov', 'Nigora Sattorova', 'Bekzod Rahimov', 'Zilola Umarova', 'Timur Ergashev', 'Madina Yusupova', 'Jasur Qodirov', 'Shahzoda Nabieva', 'Otabek Salimov', 'Kamola Tosheva'];

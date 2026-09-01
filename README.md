@@ -3,7 +3,7 @@
 A private, single-user operations dashboard with two faces and a set of shared modules.
 
 * **Work** — head of the English department at an SAT-prep school: overview, teacher 1-1 journals, tasks, CSV report engines.
-* **University** — overview, timetable, courses, tasks, lecture notes (*Konspekty*).
+* **University** (Central Asian University) — overview, timetable, courses, tasks, lecture notes (*Konspekty*).
 * **Everywhere** — a native calendar with two-way Google sync, an Obsidian-style note vault, finances, settings.
 
 One user, one passphrase. The app itself is static; data lives in a Cloudflare KV namespace and is

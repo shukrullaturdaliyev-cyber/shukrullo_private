@@ -217,7 +217,7 @@ const DEFAULTS = () => ({
     currency: 'UZS',
     semStart: '',
     semEnd: '',
-    konspektyRoot: 'NewUU',
+    konspektyRoot: 'CAU',
     calcom: '',
     hiddenSources: [],
     collapsedFolders: [],
@@ -559,7 +559,7 @@ function renderShell() {
       <div class="top">
         <div class="seg" id="faceseg">
           <button data-face="work">Work</button>
-          <button data-face="uni">University</button>
+          <button data-face="uni" title="Central Asian University">CAU</button>
         </div>
       </div>
       <nav id="nav"></nav>
@@ -606,7 +606,7 @@ function renderNav() {
   }).join('');
 
   $('#nav').innerHTML =
-    group(face === 'work' ? 'SATashkent' : 'University', NAV[face], face) +
+    group(face === 'work' ? 'SATashkent' : 'Central Asian University', NAV[face], face) +
     group('Everywhere', NAV.shared, 'shared');
 
   const mob = [...NAV[face].slice(0, 3).map((p) => ({ ...p, face })),
@@ -627,7 +627,7 @@ function topbar(title, { crumb = '', actions = '' } = {}) {
     <div class="wrap">${actions}
       <span class="seg" id="faceseg-m" style="display:none">
         <button data-face="work"${face === 'work' ? ' aria-pressed="true"' : ''}>Work</button>
-        <button data-face="uni"${face === 'uni' ? ' aria-pressed="true"' : ''}>Uni</button>
+        <button data-face="uni"${face === 'uni' ? ' aria-pressed="true"' : ''}>CAU</button>
       </span>
     </div>`;
   if (window.matchMedia('(max-width: 900px)').matches) {
@@ -777,7 +777,7 @@ function taskCard(t) {
 
 function renderTasks(view, r) {
   const face = r.face;
-  topbar(face === 'work' ? 'Tasks' : 'University tasks', {
+  topbar(face === 'work' ? 'Tasks' : 'CAU tasks', {
     actions: `<button class="btn primary" id="newtask">+ New task</button>`,
   });
   const mine = DB.tasks.filter((t) => t.face === face);
@@ -2710,7 +2710,7 @@ function importVault(fileList) {
     title: 'Import vault',
     submitLabel: 'Import',
     body: `<p class="mini">${files.length} markdown file(s) found. Folders are kept as note paths; the vault root folder name is stripped.</p>
-      <label class="f"><span>Optional prefix for every path</span><input name="prefix" placeholder="e.g. NewUU"></label>
+      <label class="f"><span>Optional prefix for every path</span><input name="prefix" placeholder="e.g. CAU"></label>
       <div id="progress" class="mini"></div>`,
     onSubmit: (d, dialog) => {
       prefix = cleanPath(d.prefix);
