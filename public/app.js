@@ -595,7 +595,7 @@ function renderNav() {
     teachers: DB.teachers.filter((t) => !t.left).length,
     notes: DB.notes.length,
   };
-  const group = (title, list, faceKey) => `<div class="navgroup">${esc(title)}</div>` + list.map((p) => {
+  const group = (title, list, faceKey, titleHTML) => `<div class="navgroup">${titleHTML || esc(title)}</div>` + list.map((p) => {
     const active = r.face === faceKey && r.page === p.id;
     const badge = counts[p.id] ? `<span class="badge">${counts[p.id]}</span>` : '';
     return `<a class="navlink" href="${href(`${faceKey}/${p.id}`)}"${active ? ' aria-current="page"' : ''}>
@@ -603,7 +603,8 @@ function renderNav() {
   }).join('');
 
   $('#nav').innerHTML =
-    group(face === 'work' ? 'SATashkent' : 'Central Asian University', NAV[face], face) +
+    group(face === 'work' ? 'SATashkent' : 'Central Asian University', NAV[face], face,
+      face === 'uni' ? `<img src="/assets/cau.png" alt="Central Asian University" class="nav-logo">` : '') +
     group('Everywhere', NAV.shared, 'shared');
 
   const mob = [...NAV[face].slice(0, 3).map((p) => ({ ...p, face })),
