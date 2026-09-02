@@ -115,9 +115,10 @@ const titleCase = (s) => String(s).replace(/\b\w/g, (c) => c.toUpperCase());
 
 function money(v, cur) {
   const c = cur || (DB.settings && DB.settings.currency) || 'UZS';
+  const dp = c === 'UZS' ? 0 : 2;   // som has no useful minor unit; dollars do
   try {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency: c, currencyDisplay: 'narrowSymbol', maximumFractionDigits: 0 }).format(v || 0);
-  } catch { return `${Math.round(v || 0).toLocaleString()} ${c}`; }
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: c, currencyDisplay: 'narrowSymbol', minimumFractionDigits: 0, maximumFractionDigits: dp }).format(v || 0);
+  } catch { return `${(v || 0).toLocaleString(undefined, { maximumFractionDigits: dp })} ${c}`; }
 }
 
 function deltaHTML(now, prev, opts = {}) {
@@ -125,7 +126,8 @@ function deltaHTML(now, prev, opts = {}) {
   const d = round(now - prev, opts.p == null ? 1 : opts.p);
   if (!d) return `<div class="delta flat">— vs prev</div>`;
   const good = opts.lowerIsBetter ? d < 0 : d > 0;
-  return `<div class="delta ${good ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${Math.abs(d)}${opts.unit || ''} vs prev</div>`;
+  const shown = opts.fmt ? opts.fmt(Math.abs(d)) : `${Math.abs(d)}${opts.unit || ''}`;
+  return `<div class="delta ${good ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${esc(shown)} vs prev</div>`;
 }
 
 function statBox(value, label, extra = '') {
@@ -215,6 +217,7 @@ const DEFAULTS = () => ({
   settings: {
     name: 'Shukrullo',
     currency: 'UZS',
+    usdRate: 12600,
     semStart: '',
     semEnd: '',
     konspektyRoot: 'CAU',
@@ -323,7 +326,8 @@ async function loadAll() {
   if (!Array.isArray(DB.tasks)) DB.tasks = [];
   if (!Array.isArray(DB.datasets)) DB.datasets = [];
   DB.uni = Object.assign({ courses: [], slots: [] }, DB.uni || {});
-  DB.finances = Object.assign({ tx: [], budgets: {} }, DB.finances || {});
+  DB.finances = Object.assign({ tx: [], budgets: {}, accounts: [] }, DB.finances || {});
+  ensureFinances();
   setSync(REMOTE ? 'cloud' : 'local');
 }
 
@@ -2765,16 +2769,105 @@ function importVault(fileList) {
 
 /* =============================================================== finances */
 
+const CURRENCIES = ['UZS', 'USD'];
 let finMonth = monthKey(new Date());
-const txOf = (mk) => (DB.finances.tx || []).filter((t) => String(t.date || '').slice(0, 7) === mk);
+let finDisplay = 'UZS';   // which currency the page is shown in
+let finQuery = '';
+let finLast = { accountId: '', category: '', currency: 'UZS', sign: -1 };
+
+/** Current USD rate (UZS per 1 USD). Used for display conversion and as the
+ *  default when entering a new USD transaction; each transaction keeps the
+ *  rate it was actually entered at. */
+const usdRate = () => Number(DB.settings.usdRate) || 12600;
+
+function ensureFinances() {
+  const f = DB.finances;
+  if (!Array.isArray(f.tx)) f.tx = [];
+  if (!f.budgets) f.budgets = {};
+  if (!Array.isArray(f.accounts)) f.accounts = [];
+
+  // migrate the old free-text `account` field into real accounts
+  const byName = new Map(f.accounts.map((a) => [norm(a.name), a]));
+  f.tx.forEach((t) => {
+    if (!t.currency) t.currency = 'UZS';
+    if (!t.kind) t.kind = 'normal';
+    if (t.accountId || !t.account) return;
+    const key = norm(t.account);
+    let acc = byName.get(key);
+    if (!acc) {
+      acc = { id: uid(), name: String(t.account).trim(), currency: 'UZS', opening: 0, archived: false };
+      f.accounts.push(acc);
+      byName.set(key, acc);
+    }
+    t.accountId = acc.id;
+  });
+  return f;
+}
+
+const accountsAll = () => ensureFinances().accounts;
+const accountsLive = () => accountsAll().filter((a) => !a.archived);
+const accountById = (id) => accountsAll().find((a) => a.id === id);
+const accountName = (id) => (accountById(id) || {}).name || '';
+
+/** A transaction's value expressed in `cur`, using the rate captured on it. */
+function txIn(t, cur) {
+  const own = t.currency || 'UZS';
+  const amt = Number(t.amount) || 0;
+  if (own === cur) return amt;
+  const rate = Number(t.rate) || usdRate();
+  return own === 'USD' ? amt * rate : amt / rate;
+}
+const inUZS = (t) => txIn(t, 'UZS');
+
+/** Convert a UZS figure into whatever the page is currently showing. */
+const disp = (uzs) => (finDisplay === 'USD' ? uzs / usdRate() : uzs);
+const fmtDisp = (uzs) => money(disp(uzs), finDisplay);
+
+const isSpendable = (t) => (t.kind || 'normal') === 'normal';
+const txOf = (mk) => ensureFinances().tx.filter((t) => String(t.date || '').slice(0, 7) === mk);
 const shiftMonth = (mk, by) => { const [y, m] = mk.split('-').map(Number); const d = new Date(y, m - 1 + by, 1); return monthKey(d); };
-const income = (list) => sum(list.filter((t) => t.amount > 0).map((t) => t.amount));
-const spent = (list) => -sum(list.filter((t) => t.amount < 0).map((t) => t.amount));
+const income = (list) => sum(list.filter((t) => isSpendable(t) && t.amount > 0).map(inUZS));
+const spent = (list) => -sum(list.filter((t) => isSpendable(t) && t.amount < 0).map(inUZS));
+
+/** Balance of one account, in that account's own currency. */
+function accountBalance(acc) {
+  let bal = Number(acc.opening) || 0;
+  ensureFinances().tx.forEach((t) => {
+    if (t.kind === 'transfer') {
+      if (t.accountId === acc.id) bal -= Math.abs(txIn(t, acc.currency));
+      if (t.toAccountId === acc.id) bal += Math.abs(txIn(t, acc.currency));
+    } else if (t.accountId === acc.id) {
+      bal += txIn(t, acc.currency);
+    }
+  });
+  return bal;
+}
+const accountBalanceUZS = (acc) => (acc.currency === 'USD' ? accountBalance(acc) * usdRate() : accountBalance(acc));
+
+/** Anything not filed under an account still counts toward the total. */
+function unassignedUZS() {
+  return sum(ensureFinances().tx.filter((t) => !t.accountId && t.kind !== 'transfer').map(inUZS));
+}
+const totalBalanceUZS = () => sum(accountsAll().map(accountBalanceUZS)) + unassignedUZS();
+
+const knownCategories = () => [...new Set(ensureFinances().tx.map((t) => t.category).filter(Boolean))].sort();
+
+/* ---------------------------------------------------------- entry dialogs */
+
+function accountOptions(selected) {
+  return `<option value="">— no account —</option>` + accountsLive().map((a) =>
+    `<option value="${attr(a.id)}"${a.id === selected ? ' selected' : ''}>${esc(a.name)} · ${esc(a.currency)}</option>`).join('');
+}
+function currencyOptions(selected) {
+  return CURRENCIES.map((c) => `<option value="${c}"${c === selected ? ' selected' : ''}>${c}</option>`).join('');
+}
 
 function txDialog(existing) {
-  const t = existing || { id: uid(), date: todayISO(), amount: 0, category: '', account: '', note: '' };
-  const cats = [...new Set((DB.finances.tx || []).map((x) => x.category).filter(Boolean))];
-  const accs = [...new Set((DB.finances.tx || []).map((x) => x.account).filter(Boolean))];
+  const t = existing || {
+    id: uid(), date: todayISO(), amount: 0, currency: finLast.currency, rate: usdRate(),
+    category: '', accountId: finLast.accountId, note: '', kind: 'normal',
+  };
+  const cats = knownCategories();
   openDialog({
     title: existing ? 'Edit transaction' : 'Add transaction',
     body: `<div class="seg" id="signseg" style="margin-bottom:12px">
@@ -2782,22 +2875,27 @@ function txDialog(existing) {
         <button type="button" data-sign="1"${t.amount > 0 ? ' aria-pressed="true"' : ''}>Income</button></div>
       <input type="hidden" name="sign" value="${t.amount > 0 ? 1 : -1}">
       <div class="row">
-        <label class="f"><span>Amount</span><input name="amount" inputmode="decimal" value="${attr(Math.abs(t.amount) || '')}"></label>
+        <label class="f" style="flex:2"><span>Amount</span><input name="amount" inputmode="decimal" value="${attr(Math.abs(t.amount) || '')}"></label>
+        <label class="f"><span>Currency</span><select name="currency">${currencyOptions(t.currency || 'UZS')}</select></label>
         <label class="f"><span>Date</span><input name="date" type="date" value="${attr(t.date)}"></label>
       </div>
+      <label class="f" id="ratewrap" style="${(t.currency || 'UZS') === 'USD' ? '' : 'display:none'}">
+        <span>Rate on that day — UZS per 1 USD</span>
+        <input name="rate" inputmode="decimal" value="${attr(t.rate || usdRate())}"></label>
       <div class="row">
-        <label class="f"><span>Category</span><input name="category" value="${attr(t.category)}" list="catlist"></label>
-        <label class="f"><span>Account</span><input name="account" value="${attr(t.account)}" list="acclist"></label>
+        <label class="f"><span>Category</span><input name="category" value="${attr(t.category || '')}" list="catlist"></label>
+        <label class="f"><span>Account</span><select name="accountId">${accountOptions(t.accountId)}</select></label>
       </div>
       <datalist id="catlist">${cats.map((c) => `<option value="${attr(c)}"></option>`).join('')}</datalist>
-      <datalist id="acclist">${accs.map((c) => `<option value="${attr(c)}"></option>`).join('')}</datalist>
-      <label class="f"><span>Note</span><input name="note" value="${attr(t.note)}"></label>`,
+      <label class="f"><span>Note</span><textarea name="note" rows="3" placeholder="What was it for, who it was with, anything you'll want to remember">${esc(t.note || '')}</textarea></label>`,
     extraFooter: existing ? `<button type="button" class="btn danger left" id="deltx">Delete</button>` : '',
     onOpen: (dlg, close) => {
       on('#signseg button', 'click', (e, b) => {
         $$('#signseg button', dlg).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
         $('[name=sign]', dlg).value = b.dataset.sign;
       }, dlg);
+      const cur = $('[name=currency]', dlg);
+      cur.addEventListener('change', () => { $('#ratewrap', dlg).style.display = cur.value === 'USD' ? '' : 'none'; });
       const del = $('#deltx', dlg);
       if (del) del.addEventListener('click', () => {
         DB.finances.tx = DB.finances.tx.filter((x) => x.id !== t.id);
@@ -2808,38 +2906,165 @@ function txDialog(existing) {
       const amt = Math.abs(num(d.amount) || 0);
       if (!amt) { toast('Enter an amount.', 'bad'); return false; }
       Object.assign(t, {
-        amount: amt * (Number(d.sign) < 0 ? -1 : 1), date: d.date || todayISO(),
-        category: d.category.trim() || 'Uncategorised', account: d.account.trim(), note: d.note.trim(),
+        amount: amt * (Number(d.sign) < 0 ? -1 : 1),
+        currency: d.currency, rate: d.currency === 'USD' ? (num(d.rate) || usdRate()) : null,
+        date: d.date || todayISO(), category: d.category.trim() || 'Uncategorised',
+        accountId: d.accountId, note: d.note, kind: t.kind || 'normal',
       });
       if (!existing) DB.finances.tx.push(t);
+      finLast = { accountId: t.accountId, category: t.category, currency: t.currency, sign: Math.sign(t.amount) };
+      if (t.currency === 'USD' && t.rate) DB.settings.usdRate = t.rate;
       finMonth = t.date.slice(0, 7);
+      saveRender('finances', 'settings');
+    },
+  });
+}
+
+function accountDialog(existing) {
+  const a = existing || { id: uid(), name: '', currency: 'UZS', opening: 0, archived: false };
+  openDialog({
+    title: existing ? 'Edit account' : 'New account',
+    body: `<label class="f"><span>Name</span><input name="name" value="${attr(a.name)}" placeholder="Card, Cash, Savings…"></label>
+      <div class="row">
+        <label class="f"><span>Currency</span><select name="currency">${currencyOptions(a.currency)}</select></label>
+        <label class="f"><span>Opening balance</span><input name="opening" inputmode="decimal" value="${attr(a.opening || 0)}"></label>
+      </div>
+      <p class="mini">The opening balance is what was in this account before you started recording here. Day-to-day corrections are better done with <b>Set balance</b>, which writes an adjustment you can see in the list.</p>
+      ${existing ? `<label class="f"><span><input type="checkbox" name="archived"${a.archived ? ' checked' : ''}> Archive (hide from lists, keep the history)</span></label>` : ''}`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delacc">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delacc', dlg);
+      if (del) del.addEventListener('click', () => {
+        close();
+        const n = ensureFinances().tx.filter((t) => t.accountId === a.id || t.toAccountId === a.id).length;
+        confirmDialog('Delete account', `“${a.name}” will be removed. ${n} transaction(s) stay in the ledger but lose their account.`, () => {
+          DB.finances.accounts = DB.finances.accounts.filter((x) => x.id !== a.id);
+          DB.finances.tx.forEach((t) => {
+            if (t.accountId === a.id) t.accountId = '';
+            if (t.toAccountId === a.id) t.toAccountId = '';
+          });
+          saveRender('finances');
+        });
+      });
+    },
+    onSubmit: (d) => {
+      if (!d.name.trim()) return false;
+      Object.assign(a, {
+        name: d.name.trim(), currency: d.currency, opening: num(d.opening) || 0,
+        archived: !!d.archived,
+      });
+      if (!existing) DB.finances.accounts.push(a);
       saveRender('finances');
     },
   });
 }
 
+/** Correct an account to a real-world figure by writing a visible adjustment. */
+function setBalanceDialog(acc) {
+  const now = accountBalance(acc);
+  openDialog({
+    title: 'Set balance · ' + acc.name,
+    submitLabel: 'Adjust',
+    body: `<p class="mini">Recorded balance is <b>${esc(money(now, acc.currency))}</b>. Type what the account actually holds and the difference is written as a dated adjustment — the ledger stays consistent instead of silently changing.</p>
+      <div class="row">
+        <label class="f"><span>Actual balance (${esc(acc.currency)})</span><input name="target" inputmode="decimal" value="${attr(round(now, 2))}"></label>
+        <label class="f"><span>Date</span><input name="date" type="date" value="${attr(todayISO())}"></label>
+      </div>
+      <label class="f"><span>Note</span><input name="note" value="Balance correction"></label>`,
+    onSubmit: (d) => {
+      const target = num(d.target);
+      if (target == null) { toast('Enter the actual balance.', 'bad'); return false; }
+      const diff = round(target - now, 2);
+      if (!diff) { toast('That already matches — nothing to adjust.'); return; }
+      DB.finances.tx.push({
+        id: uid(), date: d.date || todayISO(), amount: diff, currency: acc.currency,
+        rate: acc.currency === 'USD' ? usdRate() : null, category: 'Balance adjustment',
+        accountId: acc.id, note: d.note || 'Balance correction', kind: 'adjust',
+      });
+      saveRender('finances');
+      toast(`Adjusted by ${money(diff, acc.currency)}`, 'ok');
+    },
+  });
+}
+
+function transferDialog() {
+  const live = accountsLive();
+  if (live.length < 2) { toast('Add a second account first — transfers move money between two of them.', 'bad'); return; }
+  openDialog({
+    title: 'Transfer between accounts',
+    submitLabel: 'Transfer',
+    body: `<div class="row">
+        <label class="f"><span>From</span><select name="from">${live.map((a) => `<option value="${attr(a.id)}">${esc(a.name)} · ${esc(a.currency)}</option>`).join('')}</select></label>
+        <label class="f"><span>To</span><select name="to">${live.map((a, i) => `<option value="${attr(a.id)}"${i === 1 ? ' selected' : ''}>${esc(a.name)} · ${esc(a.currency)}</option>`).join('')}</select></label>
+      </div>
+      <div class="row">
+        <label class="f" style="flex:2"><span>Amount</span><input name="amount" inputmode="decimal"></label>
+        <label class="f"><span>Currency</span><select name="currency">${currencyOptions('UZS')}</select></label>
+        <label class="f"><span>Date</span><input name="date" type="date" value="${attr(todayISO())}"></label>
+      </div>
+      <label class="f" id="ratewrap" style="display:none"><span>Rate — UZS per 1 USD</span><input name="rate" value="${attr(usdRate())}"></label>
+      <label class="f"><span>Note</span><input name="note" placeholder="e.g. cash withdrawal"></label>
+      <p class="mini">A transfer moves money without counting as income or spending.</p>`,
+    onOpen: (dlg) => {
+      const cur = $('[name=currency]', dlg);
+      cur.addEventListener('change', () => { $('#ratewrap', dlg).style.display = cur.value === 'USD' ? '' : 'none'; });
+    },
+    onSubmit: (d) => {
+      const amt = Math.abs(num(d.amount) || 0);
+      if (!amt) { toast('Enter an amount.', 'bad'); return false; }
+      if (d.from === d.to) { toast('Pick two different accounts.', 'bad'); return false; }
+      DB.finances.tx.push({
+        id: uid(), date: d.date || todayISO(), amount: amt, currency: d.currency,
+        rate: d.currency === 'USD' ? (num(d.rate) || usdRate()) : null,
+        category: 'Transfer', accountId: d.from, toAccountId: d.to,
+        note: d.note || '', kind: 'transfer',
+      });
+      saveRender('finances');
+      toast('Transfer recorded', 'ok');
+    },
+  });
+}
+
+/* ------------------------------------------------------------- the page */
+
 function renderFinances(view) {
+  ensureFinances();
   const cur = txOf(finMonth);
   const prevMk = shiftMonth(finMonth, -1);
   const prev = txOf(prevMk);
   const inc = income(cur), out = spent(cur);
-  const net = inc - out;
-  const all = sum((DB.finances.tx || []).map((t) => t.amount));
   const [y, m] = finMonth.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
   const isNow = finMonth === monthKey(new Date());
   const dayOfMonth = isNow ? new Date().getDate() : daysInMonth;
-  const pace = out / Math.max(1, dayOfMonth);
 
   topbar('Finances', {
-    actions: `<button class="btn" id="impcsv">Import CSV</button><button class="btn" id="expcsv">Export</button><button class="btn primary" id="addtx">+ Transaction</button>`,
+    actions: `<span class="seg" id="curseg">${CURRENCIES.map((c) => `<button data-cur="${c}"${finDisplay === c ? ' aria-pressed="true"' : ''}>${c}</button>`).join('')}</span>
+      <button class="btn" id="transfer">Transfer</button>
+      <button class="btn" id="impcsv">Import</button><button class="btn" id="expcsv">Export</button>`,
   });
 
   const months = Array.from({ length: 6 }, (_, i) => shiftMonth(finMonth, i - 5));
   const cats = {};
-  cur.filter((t) => t.amount < 0).forEach((t) => { cats[t.category || 'Uncategorised'] = (cats[t.category || 'Uncategorised'] || 0) - t.amount; });
+  cur.filter((t) => isSpendable(t) && t.amount < 0).forEach((t) => {
+    cats[t.category || 'Uncategorised'] = (cats[t.category || 'Uncategorised'] || 0) - inUZS(t);
+  });
   const catRows = Object.entries(cats).sort((a, b) => b[1] - a[1]);
   const budgets = DB.finances.budgets || {};
+
+  const q = norm(finQuery);
+  const listed = [...cur].filter((t) => !q || norm(`${t.note} ${t.category} ${accountName(t.accountId)}`).includes(q))
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
+
+  const accRows = accountsLive().map((a) => {
+    const bal = accountBalance(a);
+    return `<div class="list-row">
+      <div class="grow"><div class="t">${esc(a.name)}</div><div class="m">${esc(a.currency)}${a.opening ? ` · opened at ${esc(money(a.opening, a.currency))}` : ''}</div></div>
+      <span class="num ${bal < 0 ? 'delta down' : ''}" style="font-size:14px">${esc(money(bal, a.currency))}</span>
+      <button class="btn ghost sm" data-setbal="${attr(a.id)}">set</button>
+      <button class="btn ghost sm" data-editacc="${attr(a.id)}">edit</button>
+    </div>`;
+  }).join('');
 
   view.innerHTML = `
     <div class="spread">
@@ -2847,124 +3072,246 @@ function renderFinances(view) {
         <span class="b">${esc(monthLabel(finMonth))}</span>
         <button class="btn sm" id="nextm">→</button>
         ${!isNow ? `<button class="btn ghost sm" id="thism">This month</button>` : ''}</div>
-      <span class="mini num">${cur.length} transactions</span>
+      <span class="mini num">${cur.length} transactions · 1 USD = ${esc(Number(usdRate()).toLocaleString())} UZS</span>
     </div>
-    <div class="stats">
-      ${statBox(money(inc), 'income')}
-      ${statBox(money(out), 'spent', deltaHTML(round(out, 0), round(spent(prev), 0), { p: 0, lowerIsBetter: true, unit: '' }))}
-      ${statBox(money(net), 'net', `<div class="delta flat">≈ ${money(pace)}/day</div>`)}
-      ${statBox(money(all), 'balance, all time')}
-    </div>
-    <div class="grid g-side">
-      ${panel('Six months in / out', `<div class="chart-wrap"><canvas id="finBars"></canvas></div>`)}
-      ${panel('Where it went', catRows.length ? `<div class="chart-wrap"><canvas id="finDough"></canvas></div>` : emptyState('Nothing spent yet', 'Add an expense and the split appears here.'))}
-    </div>
-    <div class="grid g-side">
-      ${panel('Transactions', cur.length ? `<div class="list">${[...cur].sort((a, b) => b.date.localeCompare(a.date)).map((t) => `
-        <div class="list-row click" data-tx="${attr(t.id)}">
-          <span class="m num" style="width:52px">${esc(fmtDate(t.date, { day: '2-digit', month: 'short' }))}</span>
-          <div class="grow"><div class="t trunc">${esc(t.note || t.category || 'Transaction')}</div>
-            <div class="m trunc">${esc(t.category || 'Uncategorised')}${t.account ? ' · ' + esc(t.account) : ''}</div></div>
-          <span class="num ${t.amount > 0 ? 'delta up' : ''}">${t.amount > 0 ? '+' : '−'}${esc(money(Math.abs(t.amount)))}</span>
-        </div>`).join('')}</div>`
-        : emptyState('No transactions this month', 'Add one with + Transaction, or import a CSV with date/amount/category columns.'), { flush: true })}
 
-      ${panel('Budgets', `${catRows.length || Object.keys(budgets).length ? `<div class="list">${
-        [...new Set([...Object.keys(budgets), ...catRows.map((c) => c[0])])].map((cat) => {
-          const limit = Number(budgets[cat]) || 0;
-          const usedC = cats[cat] || 0;
-          const share = limit ? usedC / limit : 0;
-          const expected = limit * (dayOfMonth / daysInMonth);
-          const verdict = !limit ? 'no budget set' : usedC > limit ? `over by ${money(usedC - limit)}`
-            : usedC > expected ? 'ahead of pace' : 'on pace';
-          return `<div class="list-row" style="display:block">
-            <div class="spread"><span class="t">${esc(cat)}</span>
-              <span class="mini num">${esc(money(usedC))}${limit ? ' / ' + esc(money(limit)) : ''}</span></div>
-            <div class="bar ${!limit ? '' : usedC > limit ? 'bad' : usedC > expected ? 'warn' : 'ok'}" style="margin:6px 0 4px"><i style="width:${clamp(Math.round(share * 100), 0, 100)}%"></i></div>
-            <div class="spread"><span class="mini">${esc(verdict)}</span>
-              <button class="btn ghost sm" data-budget="${attr(cat)}">set limit</button></div>
+    <div class="stats">
+      ${statBox(fmtDisp(inc), 'income', deltaHTML(round(disp(inc), 0), round(disp(income(prev)), 0), { p: 0, fmt: (v) => money(v, finDisplay) }))}
+      ${statBox(fmtDisp(out), 'spent', deltaHTML(round(disp(out), 0), round(disp(spent(prev)), 0), { p: 0, lowerIsBetter: true, fmt: (v) => money(v, finDisplay) }))}
+      ${statBox(fmtDisp(inc - out), 'net', `<div class="delta flat">≈ ${esc(fmtDisp(out / Math.max(1, dayOfMonth)))}/day</div>`)}
+      ${statBox(fmtDisp(totalBalanceUZS()), 'balance, all accounts')}
+    </div>
+
+    <form class="quickadd" id="quickadd">
+      <span class="seg" id="qsign">
+        <button type="button" data-sign="-1"${finLast.sign < 0 ? ' aria-pressed="true"' : ''}>Expense</button>
+        <button type="button" data-sign="1"${finLast.sign > 0 ? ' aria-pressed="true"' : ''}>Income</button></span>
+      <input type="hidden" name="sign" value="${finLast.sign > 0 ? 1 : -1}">
+      <input name="amount" inputmode="decimal" placeholder="Amount" class="qa-amount" autocomplete="off">
+      <select name="currency" class="qa-cur">${currencyOptions(finLast.currency)}</select>
+      <input name="rate" inputmode="decimal" class="qa-rate" value="${attr(usdRate())}" title="UZS per 1 USD" style="${finLast.currency === 'USD' ? '' : 'display:none'}">
+      <input name="category" placeholder="Category" list="catlist2" class="qa-cat" value="${attr(finLast.category)}" autocomplete="off">
+      <select name="accountId" class="qa-acc">${accountOptions(finLast.accountId)}</select>
+      <input name="note" placeholder="Note — what it was for" class="qa-note" autocomplete="off">
+      <input name="date" type="date" class="qa-date" value="${attr(isNow ? todayISO() : finMonth + '-01')}">
+      <button class="btn primary" type="submit">Add</button>
+      <datalist id="catlist2">${knownCategories().map((c) => `<option value="${attr(c)}"></option>`).join('')}</datalist>
+    </form>
+
+    <div class="grid g-side">
+      ${panel('Accounts', accRows ? `<div class="list">${accRows}</div>` : emptyState('No accounts yet',
+        'Add Card, Cash, Savings — each keeps its own balance and currency, and transfers between them are not counted as spending.'),
+        { flush: true, actions: `<button class="btn sm" id="addacc">+ Account</button>` })}
+      ${panel('Six months in / out', `<div class="chart-wrap"><canvas id="finBars"></canvas></div>`)}
+    </div>
+
+    <div class="grid g-side">
+      ${panel(`Transactions`, `
+        <div class="body" style="padding:10px 14px;border-bottom:1px solid var(--line)">
+          <input id="finsearch" placeholder="Search notes, categories, accounts" value="${attr(finQuery)}">
+        </div>
+        ${listed.length ? `<div class="list">${listed.map((t) => {
+          const native = money(t.amount, t.currency || 'UZS');
+          const isTransfer = t.kind === 'transfer';
+          const converted = (t.currency || 'UZS') !== finDisplay ? ` <span class="mut">(${esc(money(txIn(t, finDisplay), finDisplay))})</span>` : '';
+          return `<div class="list-row click" data-tx="${attr(t.id)}" style="align-items:flex-start">
+            <span class="m num" style="width:52px;padding-top:2px">${esc(fmtDate(t.date, { day: '2-digit', month: 'short' }))}</span>
+            <div class="grow">
+              <div class="t">${esc(t.category || 'Uncategorised')}
+                ${isTransfer ? `<span class="pill">transfer → ${esc(accountName(t.toAccountId))}</span>` : ''}
+                ${t.kind === 'adjust' ? '<span class="pill warn">adjustment</span>' : ''}</div>
+              ${t.note ? `<div class="m" style="white-space:pre-wrap">${esc(t.note)}</div>` : ''}
+              <div class="m">${esc(accountName(t.accountId) || 'no account')}</div>
+            </div>
+            <div style="text-align:right">
+              <div class="num ${t.amount > 0 && !isTransfer ? 'delta up' : ''}">${isTransfer ? '' : (t.amount > 0 ? '+' : '−')}${esc(money(Math.abs(t.amount), t.currency || 'UZS'))}</div>
+              <div class="mini">${converted}</div>
+            </div>
+            <button class="btn ghost sm" data-repeat="${attr(t.id)}" title="Repeat this today">↻</button>
           </div>`;
-        }).join('')}</div>` : emptyState('No categories yet', 'Spend something first, then set a monthly limit per category.')}`, { flush: true })}
+        }).join('')}</div>`
+          : emptyState(q ? 'Nothing matches' : 'No transactions this month',
+            q ? 'Try a shorter search, or clear the box.' : 'Use the quick-add row above — amount, category, note, Enter.')}`,
+        { flush: true, sub: q ? `${listed.length} of ${cur.length}` : '' })}
+
+      <div style="display:flex;flex-direction:column;gap:14px">
+        ${panel('Where it went', catRows.length ? `<div class="chart-wrap"><canvas id="finDough"></canvas></div>`
+          : emptyState('Nothing spent yet', 'Add an expense and the split appears here.'))}
+        ${panel('Budgets', catRows.length || Object.keys(budgets).length ? `<div class="list">${
+          [...new Set([...Object.keys(budgets), ...catRows.map((c) => c[0])])].map((cat) => {
+            const limit = Number(budgets[cat]) || 0;
+            const usedC = cats[cat] || 0;
+            const share = limit ? usedC / limit : 0;
+            const expected = limit * (dayOfMonth / daysInMonth);
+            const verdict = !limit ? 'no budget set' : usedC > limit ? `over by ${fmtDisp(usedC - limit)}`
+              : usedC > expected ? 'ahead of pace' : 'on pace';
+            return `<div class="list-row" style="display:block">
+              <div class="spread"><span class="t">${esc(cat)}</span>
+                <span class="mini num">${esc(fmtDisp(usedC))}${limit ? ' / ' + esc(fmtDisp(limit)) : ''}</span></div>
+              <div class="bar ${!limit ? '' : usedC > limit ? 'bad' : usedC > expected ? 'warn' : 'ok'}" style="margin:6px 0 4px"><i style="width:${clamp(Math.round(share * 100), 0, 100)}%"></i></div>
+              <div class="spread"><span class="mini">${esc(verdict)}</span>
+                <button class="btn ghost sm" data-budget="${attr(cat)}">set limit</button></div>
+            </div>`;
+          }).join('')}</div>` : emptyState('No categories yet', 'Spend something first, then set a monthly limit per category.'), { flush: true })}
+      </div>
     </div>`;
 
+  /* --- wiring --- */
+  on('#curseg button', 'click', (e, b) => { finDisplay = b.dataset.cur; render(); }, document);
   $('#prevm').addEventListener('click', () => { finMonth = shiftMonth(finMonth, -1); render(); });
   $('#nextm').addEventListener('click', () => { finMonth = shiftMonth(finMonth, 1); render(); });
   const tm = $('#thism');
   if (tm) tm.addEventListener('click', () => { finMonth = monthKey(new Date()); render(); });
-  $('#addtx').addEventListener('click', () => txDialog(null));
-  on('[data-tx]', 'click', (e, el) => txDialog((DB.finances.tx || []).find((t) => t.id === el.dataset.tx)), view);
+  $('#addacc').addEventListener('click', () => accountDialog(null));
+  $('#transfer').addEventListener('click', transferDialog);
+
+  const qa = $('#quickadd');
+  const qcur = $('[name=currency]', qa);
+  qcur.addEventListener('change', () => { $('.qa-rate', qa).style.display = qcur.value === 'USD' ? '' : 'none'; });
+  on('#qsign button', 'click', (e, b) => {
+    $$('#qsign button', qa).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    $('[name=sign]', qa).value = b.dataset.sign;
+  }, qa);
+  qa.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const d = {};
+    $$('[name]', qa).forEach((f) => { d[f.name] = f.value; });
+    const amt = Math.abs(num(d.amount) || 0);
+    if (!amt) { toast('Enter an amount first.', 'bad'); $('.qa-amount', qa).focus(); return; }
+    const t = {
+      id: uid(), date: d.date || todayISO(), amount: amt * (Number(d.sign) < 0 ? -1 : 1),
+      currency: d.currency, rate: d.currency === 'USD' ? (num(d.rate) || usdRate()) : null,
+      category: d.category.trim() || 'Uncategorised', accountId: d.accountId,
+      note: d.note.trim(), kind: 'normal',
+    };
+    DB.finances.tx.push(t);
+    finLast = { accountId: t.accountId, category: t.category, currency: t.currency, sign: Math.sign(t.amount) };
+    if (t.currency === 'USD' && t.rate) DB.settings.usdRate = t.rate;
+    save('finances', 'settings');
+    toast(`${t.amount > 0 ? 'Income' : 'Expense'} ${money(Math.abs(t.amount), t.currency)} saved`, 'ok');
+    render();
+    const again = $('.qa-amount');
+    if (again) again.focus();
+  });
+
+  const search = $('#finsearch');
+  search.addEventListener('input', () => {
+    finQuery = search.value;
+    const pos = search.selectionStart;
+    render();
+    const s2 = $('#finsearch');
+    if (s2) { s2.focus(); s2.setSelectionRange(pos, pos); }
+  });
+
+  on('[data-tx]', 'click', (e, el) => {
+    if (e.target.closest('[data-repeat]')) return;
+    txDialog(ensureFinances().tx.find((t) => t.id === el.dataset.tx));
+  }, view);
+  on('[data-repeat]', 'click', (e, el) => {
+    e.stopPropagation();
+    const src = ensureFinances().tx.find((t) => t.id === el.dataset.repeat);
+    if (!src) return;
+    const copy = { ...src, id: uid(), date: todayISO() };
+    DB.finances.tx.push(copy);
+    finMonth = copy.date.slice(0, 7);
+    saveRender('finances');
+    toast(`Repeated ${money(Math.abs(copy.amount), copy.currency || 'UZS')} today`, 'ok');
+  }, view);
+  on('[data-setbal]', 'click', (e, el) => setBalanceDialog(accountById(el.dataset.setbal)), view);
+  on('[data-editacc]', 'click', (e, el) => accountDialog(accountById(el.dataset.editacc)), view);
   on('[data-budget]', 'click', (e, el) => {
     const cat = el.dataset.budget;
     openDialog({
       title: 'Monthly budget · ' + cat,
-      body: `<label class="f"><span>Limit (${esc(DB.settings.currency)})</span><input name="limit" inputmode="decimal" value="${attr(budgets[cat] || '')}"></label>`,
+      body: `<label class="f"><span>Limit in ${esc(finDisplay)}</span><input name="limit" inputmode="decimal" value="${attr(budgets[cat] ? round(disp(budgets[cat]), 2) : '')}"></label>
+        <p class="mini">Stored in UZS so the limit does not move when you switch the display currency.</p>`,
       onSubmit: (d) => {
         const v = num(d.limit);
-        if (!v) delete DB.finances.budgets[cat]; else DB.finances.budgets[cat] = v;
+        if (!v) delete DB.finances.budgets[cat];
+        else DB.finances.budgets[cat] = finDisplay === 'USD' ? v * usdRate() : v;
         saveRender('finances');
       },
     });
   }, view);
 
   $('#expcsv').addEventListener('click', () => {
-    const rows = [['date', 'amount', 'category', 'account', 'note', 'type'],
-      ...(DB.finances.tx || []).map((t) => [t.date, t.amount, t.category, t.account, t.note, t.amount > 0 ? 'income' : 'expense'])];
+    const rows = [['date', 'amount', 'currency', 'rate', 'category', 'account', 'note', 'kind', 'type'],
+      ...ensureFinances().tx.map((t) => [t.date, t.amount, t.currency || 'UZS', t.rate || '', t.category,
+        accountName(t.accountId), t.note, t.kind || 'normal', t.amount > 0 ? 'income' : 'expense'])];
     download('finances.csv', rows.map((r) => r.map((c) => `"${String(c == null ? '' : c).replace(/"/g, '""')}"`).join(',')).join('\n'), 'text/csv');
   });
-  $('#impcsv').addEventListener('click', () => {
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.csv';
-    input.onchange = () => {
-      const f = input.files[0];
-      if (!f) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const { headers, rows } = parseCSV(reader.result);
-        const find = (needles) => pickHeader(headers, needles);
-        const hDate = find(['date', 'time']), hAmt = find(['amount', 'sum', 'value']),
-          hCat = find(['category', 'cat']), hNote = find(['note', 'description', 'memo']),
-          hAcc = find(['account', 'wallet', 'card']), hType = find(['type', 'kind']);
-        if (!hDate || !hAmt) { toast('Need at least date and amount columns.', 'bad'); return; }
-        const dayFirst = columnIsDayFirst(rows, hDate);
-        let added = 0;
-        rows.forEach((r) => {
-          const d = parseDate(r[hDate], dayFirst);
-          let amt = num(r[hAmt]);
-          if (!d || amt == null) return;
-          const type = norm(hType ? r[hType] : '');
-          if (type.includes('expense') || type.includes('debit')) amt = -Math.abs(amt);
-          else if (type.includes('income') || type.includes('credit')) amt = Math.abs(amt);
-          DB.finances.tx.push({
-            id: uid(), date: toISO(d), amount: amt,
-            category: (hCat ? r[hCat] : '') || 'Uncategorised', account: hAcc ? r[hAcc] : '', note: hNote ? r[hNote] : '',
-          });
-          added++;
-        });
-        saveRender('finances');
-        toast(`${added} transaction(s) imported`, 'ok');
-      };
-      reader.readAsText(f);
-    };
-    input.click();
-  });
+  $('#impcsv').addEventListener('click', importFinancesCSV);
 
   drawChart('finBars', {
     type: 'bar',
     data: {
       labels: months.map(monthLabel),
       datasets: [
-        { label: 'in', data: months.map((mk) => income(txOf(mk))), backgroundColor: cssVar('--ok'), borderRadius: 4 },
-        { label: 'out', data: months.map((mk) => spent(txOf(mk))), backgroundColor: cssVar('--bad'), borderRadius: 4 },
+        { label: 'in', data: months.map((mk) => disp(income(txOf(mk)))), backgroundColor: cssVar('--ok'), borderRadius: 4 },
+        { label: 'out', data: months.map((mk) => disp(spent(txOf(mk)))), backgroundColor: cssVar('--bad'), borderRadius: 4 },
       ],
     },
   });
   if (catRows.length) drawChart('finDough', {
     type: 'doughnut',
-    data: { labels: catRows.map((c) => c[0]), datasets: [{ data: catRows.map((c) => c[1]), backgroundColor: PALETTE, borderWidth: 0 }] },
+    data: { labels: catRows.map((c) => c[0]), datasets: [{ data: catRows.map((c) => disp(c[1])), backgroundColor: PALETTE, borderWidth: 0 }] },
     options: { cutout: '62%', scales: { x: { display: false }, y: { display: false } }, plugins: { legend: { position: 'right' } } },
   });
 }
 PAGES['shared/finances'] = renderFinances;
+
+function importFinancesCSV() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.csv';
+  input.onchange = () => {
+    const f = input.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const { headers, rows } = parseCSV(reader.result);
+      const find = (needles) => pickHeader(headers, needles);
+      const hDate = find(['date', 'time']), hAmt = find(['amount', 'sum', 'value']),
+        hCat = find(['category', 'cat']), hNote = find(['note', 'description', 'memo']),
+        hAcc = find(['account', 'wallet', 'card']), hType = find(['type', 'kind']),
+        hCur = find(['currency', 'cur']), hRate = find(['rate']);
+      if (!hDate || !hAmt) { toast('Need at least date and amount columns.', 'bad'); return; }
+      const dayFirst = columnIsDayFirst(rows, hDate);
+      const byName = new Map(accountsAll().map((a) => [norm(a.name), a]));
+      let added = 0;
+      rows.forEach((r) => {
+        const d = parseDate(r[hDate], dayFirst);
+        let amt = num(r[hAmt]);
+        if (!d || amt == null) return;
+        const type = norm(hType ? r[hType] : '');
+        if (type.includes('expense') || type.includes('debit')) amt = -Math.abs(amt);
+        else if (type.includes('income') || type.includes('credit')) amt = Math.abs(amt);
+        let accountId = '';
+        const accName = hAcc ? String(r[hAcc] || '').trim() : '';
+        if (accName) {
+          let acc = byName.get(norm(accName));
+          if (!acc) {
+            acc = { id: uid(), name: accName, currency: 'UZS', opening: 0, archived: false };
+            DB.finances.accounts.push(acc);
+            byName.set(norm(accName), acc);
+          }
+          accountId = acc.id;
+        }
+        const currency = hCur && /usd|\$/i.test(String(r[hCur])) ? 'USD' : 'UZS';
+        DB.finances.tx.push({
+          id: uid(), date: toISO(d), amount: amt, currency,
+          rate: currency === 'USD' ? (num(hRate ? r[hRate] : null) || usdRate()) : null,
+          category: (hCat ? r[hCat] : '') || 'Uncategorised', accountId,
+          note: hNote ? r[hNote] : '', kind: 'normal',
+        });
+        added++;
+      });
+      saveRender('finances');
+      toast(`${added} transaction(s) imported`, 'ok');
+    };
+    reader.readAsText(f);
+  };
+  input.click();
+}
 
 /* =============================================================== calendar */
 
@@ -3418,7 +3765,11 @@ function renderSettings(view) {
     <div class="grid g2">
       ${panel('You', `
         <label class="f"><span>Name (used in greetings)</span><input id="s_name" value="${attr(s.name)}"></label>
-        <label class="f"><span>Currency</span><input id="s_cur" value="${attr(s.currency)}" placeholder="UZS"></label>
+        <div class="row">
+          <label class="f"><span>Main currency</span><input id="s_cur" value="${attr(s.currency)}" placeholder="UZS"></label>
+          <label class="f"><span>USD rate — UZS per 1 USD</span><input id="s_rate" inputmode="decimal" value="${attr(s.usdRate || 12600)}"></label>
+        </div>
+        <p class="mini" style="margin-top:-4px">Used to convert totals when you switch the Finances page to USD, and prefilled when you enter a dollar transaction. Each transaction keeps the rate it was actually entered at.</p>
         <div class="row">
           <label class="f"><span>Semester start</span><input id="s_ss" type="date" value="${attr(s.semStart)}"></label>
           <label class="f"><span>Semester end</span><input id="s_se" type="date" value="${attr(s.semEnd)}"></label>
@@ -3458,6 +3809,7 @@ function renderSettings(view) {
     Object.assign(s, {
       name: $('#s_name').value.trim(), currency: $('#s_cur').value.trim().toUpperCase() || 'UZS',
       semStart: $('#s_ss').value, semEnd: $('#s_se').value,
+      usdRate: num($('#s_rate').value) || 12600,
       konspektyRoot: cleanPath($('#s_root').value), calcom: $('#s_cal').value.trim(),
     });
     saveRender('settings');

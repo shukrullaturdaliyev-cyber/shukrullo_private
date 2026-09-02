@@ -520,3 +520,23 @@ details.raw > summary:hover { color: var(--tx); }
 .drop { border: 1px dashed var(--line-2); border-radius: var(--r-panel); padding: 26px; text-align: center; color: var(--tx-3); }
 .drop.over { border-color: var(--accent); color: var(--tx); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* ---------- finances quick-add ---------- */
+.quickadd {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  background: var(--s1); border: 1px solid var(--line);
+  border-radius: var(--r-panel); padding: 10px 12px;
+}
+.quickadd input, .quickadd select { width: auto; }
+.quickadd .qa-amount { width: 130px; font-family: var(--mono); }
+.quickadd .qa-rate { width: 92px; font-family: var(--mono); }
+.quickadd .qa-cur { width: 84px; }
+.quickadd .qa-cat { width: 150px; }
+.quickadd .qa-acc { width: 150px; }
+.quickadd .qa-note { flex: 1; min-width: 160px; }
+.quickadd .qa-date { width: 150px; font-family: var(--mono); }
+@media (max-width: 900px) {
+  .quickadd { gap: 6px; }
+  .quickadd .qa-amount, .quickadd .qa-cat, .quickadd .qa-acc, .quickadd .qa-date { width: calc(50% - 3px); }
+  .quickadd .qa-note { width: 100%; flex: none; }
+}
