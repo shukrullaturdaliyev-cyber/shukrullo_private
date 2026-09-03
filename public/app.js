@@ -133,8 +133,42 @@ function deltaHTML(now, prev, opts = {}) {
 function statBox(value, label, extra = '') {
   return `<div class="stat"><div class="stat-v">${esc(value)}</div><div class="stat-l">${esc(label)}</div>${extra}</div>`;
 }
-function emptyState(title, hint) {
-  return `<div class="empty"><strong>${esc(title)}</strong>${esc(hint)}</div>`;
+/** An empty state that offers the next step as a button, not just a sentence. */
+function emptyState(title, hint, action = '') {
+  return `<div class="empty"><strong>${esc(title)}</strong>${esc(hint)}${action ? `<div class="empty-act">${action}</div>` : ''}</div>`;
+}
+const actBtn = (label, id) => `<button class="btn sm" data-act="${attr(id)}">${esc(label)}</button>`;
+
+/** Tiny inline-SVG trend line — no chart library, no layout cost. */
+function sparkline(values, opts = {}) {
+  const pts = values.filter((v) => v != null && Number.isFinite(v));
+  if (pts.length < 2) return '';
+  const w = opts.w || 88, h = opts.h || 24, pad = 2;
+  const min = Math.min(...pts), max = Math.max(...pts);
+  const span = (max - min) || 1;
+  const step = (w - pad * 2) / (pts.length - 1);
+  const xy = pts.map((v, i) => [pad + i * step, h - pad - ((v - min) / span) * (h - pad * 2)]);
+  const d = xy.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
+  const area = `${d} L${xy[xy.length - 1][0].toFixed(1)} ${h} L${xy[0][0].toFixed(1)} ${h} Z`;
+  const rising = pts[pts.length - 1] >= pts[0];
+  const stroke = opts.color || (rising ? 'var(--ok)' : 'var(--bad)');
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true">
+    <path d="${area}" fill="${stroke}" opacity="0.12"/>
+    <path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${xy[xy.length - 1][0].toFixed(1)}" cy="${xy[xy.length - 1][1].toFixed(1)}" r="2" fill="${stroke}"/>
+  </svg>`;
+}
+
+/** The band across the top of an overview: who, when, and the state of play. */
+function hero(title, sub, lines, actions = '') {
+  return `<section class="hero">
+    <div class="hero-main">
+      <div class="hero-sub">${esc(sub)}</div>
+      <h2>${esc(title)}</h2>
+      ${lines.length ? `<div class="hero-lines">${lines.map((l) => `<span class="${l.kind || ''}">${l.html}</span>`).join('')}</div>` : ''}
+    </div>
+    ${actions ? `<div class="hero-acts">${actions}</div>` : ''}
+  </section>`;
 }
 function panel(title, bodyHTML, opts = {}) {
   return `<section class="panel">
@@ -841,58 +875,117 @@ function greeting() {
 }
 
 function renderWorkOverview(view) {
-  topbar(greeting(), {
-    crumb: new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }),
-    actions: `<button class="btn" id="quicknote">Quick note</button><button class="btn primary" id="newtask">+ Task</button>`,
-  });
-
   const deadlines = deadlineRows('work');
   const overdue = deadlines.filter((d) => daysUntil(d.due) < 0);
-  const week = deadlines.filter((d) => daysUntil(d.due) >= 0 && daysUntil(d.due) <= 7);
+  const dueToday = deadlines.filter((d) => daysUntil(d.due) === 0);
+  const week = deadlines.filter((d) => { const n = daysUntil(d.due); return n > 0 && n <= 7; });
   const owed = DB.teachers.flatMap((t) => openTasks(t, 'task_me').map((e) => ({ t, e })));
-  const stale = activeTeachers().map((t) => ({ t, days: staleness(t) }))
+  const waiting = DB.teachers.flatMap((t) => openTasks(t, 'task_them').map((e) => ({ t, e })));
+  const active = activeTeachers();
+  const stale = active.map((t) => ({ t, days: staleness(t) }))
     .sort((a, b) => (b.days == null ? 1e6 : b.days) - (a.days == null ? 1e6 : a.days));
-  const recentNotes = [...DB.notes].sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || ''))).slice(0, 6);
+  const cold = stale.filter((x) => x.days == null || x.days > 21);
+  const recentNotes = [...DB.notes].sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || ''))).slice(0, 5);
+
+  // exam medians across every uploaded week — the department's pulse
+  const pool = allExamRecords();
+  const weeks = [...new Set(pool.map((r) => r.week))].sort();
+  const medians = weeks.map((w) => round(median(pool.filter((r) => r.week === w).map((r) => r.score)), 1));
+  const scale = pool.length ? detectScale(pool) : null;
+  const lastMed = medians[medians.length - 1];
+  const prevMed = medians.length > 1 ? medians[medians.length - 2] : null;
+
+  const lines = [];
+  if (overdue.length) lines.push({ kind: 'bad', html: `<b>${overdue.length}</b> overdue` });
+  if (dueToday.length) lines.push({ kind: 'warn', html: `<b>${dueToday.length}</b> due today` });
+  if (owed.length) lines.push({ kind: '', html: `<b>${owed.length}</b> you owe teachers` });
+  if (cold.length) lines.push({ kind: 'warn', html: `<b>${cold.length}</b> unseen for 3+ weeks` });
+  if (!lines.length) lines.push({ kind: 'good', html: DB.teachers.length ? 'Nothing overdue — a clear desk.' : 'Empty desk. Add a teacher to begin.' });
+
+  topbar(' ');
+  $('#topbar').innerHTML = '';
 
   view.innerHTML = `
+    ${hero(greeting(), new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }), lines,
+      `${actBtn('Quick note', 'quicknote')}${actBtn('+ Task', 'newtask')}${actBtn('Upload CSV', 'upload')}
+       <button class="btn sm ghost" data-act="palette" title="Ctrl+K">⌘K search</button>`)}
+
     <div class="stats">
-      ${statBox(overdue.length, 'overdue')}
-      ${statBox(week.length, 'due this week')}
-      ${statBox(owed.length, 'tasks I owe teachers')}
-      ${statBox(DB.datasets.length, 'datasets loaded')}
+      ${statBox(overdue.length, 'overdue', overdue.length ? `<div class="delta down">needs today</div>` : `<div class="delta up">all clear</div>`)}
+      ${statBox(week.length + dueToday.length, 'due this week')}
+      ${statBox(owed.length, 'tasks I owe', waiting.length ? `<div class="delta flat">${waiting.length} waiting on them</div>` : '')}
+      ${scale
+        ? statBox(lastMed + scale.unit, 'latest exam median',
+            `<div class="spark-wrap">${sparkline(medians)}${(() => {
+            if (prevMed == null) return '';
+            const d = round(lastMed - prevMed, 1);
+            if (!d) return `<span class="delta flat">level</span>`;
+            return `<span class="delta ${d > 0 ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${Math.abs(d)}</span>`;
+          })()}</div>`)
+        : statBox(DB.datasets.length, 'datasets loaded', `<div class="delta flat">upload a week</div>`)}
     </div>
+
     <div class="grid g-side">
-      ${panel('Deadlines · next 7 days', week.length || overdue.length ? `<div class="list">${
-        [...overdue, ...week].slice(0, 12).map((d) => `<div class="list-row click" data-open-task="${attr(d.id)}">
+      ${panel('Today', (overdue.length || dueToday.length) ? `<div class="list">${
+        [...overdue, ...dueToday].slice(0, 10).map((d) => `<div class="list-row click" data-open-task="${attr(d.id)}">
           <div class="grow"><div class="t trunc">${esc(d.label)}</div><div class="m">${d.kind === 'step' ? 'step' : 'final deadline'}</div></div>
           <span class="pill ${dueClass(d.due)}">${esc(relDays(d.due))}</span></div>`).join('')
-      }</div>` : emptyState('Clear week', 'Nothing due in the next seven days. Add a task to fill it.'), { flush: true })}
+      }</div>` : emptyState('Nothing due today', 'Overdue work and today’s deadlines land here first.',
+          actBtn('Add a task', 'newtask')), { flush: true, sub: overdue.length ? `${overdue.length} overdue` : '' })}
 
-      ${panel('Longest since a 1-1', stale.length ? `<div class="list">${stale.slice(0, 8).map(({ t, days }) => `
-        <div class="list-row click" data-teacher="${attr(t.id)}">
-          <div class="grow"><div class="t">${esc(t.name)}</div><div class="m">${esc(t.teaches || 'no subject set')}</div></div>
-          <span class="pill ${days == null ? 'warn' : days > 21 ? 'bad' : ''}">${days == null ? 'never' : days + 'd ago'}</span>
-        </div>`).join('')}</div>
-        ${owed.length ? `<div class="body"><div class="mini b" style="margin-bottom:6px">I OWE THEM</div>${
-          owed.slice(0, 6).map(({ t, e }) => `<div class="list-row" style="padding:6px 0;border:0"><div class="grow"><span class="t">${esc(e.text)}</span> <span class="m">— ${esc(t.name)}</span></div></div>`).join('')
-        }</div>` : ''}`
-        : emptyState('No teachers yet', 'Add your first teacher on the 1-1s page to start a journal.'), { flush: true })}
+      ${panel('This week', week.length ? `<div class="list">${week.slice(0, 8).map((d) => `
+        <div class="list-row click" data-open-task="${attr(d.id)}">
+          <div class="grow"><div class="t trunc">${esc(d.label)}</div><div class="m">${d.kind === 'step' ? 'step' : 'final deadline'}</div></div>
+          <span class="pill ${dueClass(d.due)}">${esc(fmtDay(d.due))}</span></div>`).join('')}</div>`
+        : emptyState('Clear week', 'Nothing due in the next seven days.', actBtn('Add a task', 'newtask')), { flush: true })}
     </div>
+
+    ${panel(`Teachers · ${active.length}`, active.length ? `<div class="tgrid">${stale.map(({ t, days }) => {
+      const tone = days == null ? 'bad' : days > 21 ? 'bad' : days > 14 ? 'warn' : 'ok';
+      const me = openTasks(t, 'task_me').length;
+      const them = openTasks(t, 'task_them').length;
+      return `<div class="tcard tone-${tone}" data-teacher="${attr(t.id)}">
+        <div class="tname trunc">${esc(t.name)}</div>
+        <div class="tmeta trunc">${esc(t.teaches || 'no subject set')}</div>
+        <div class="tfoot">
+          <span class="pill ${tone}">${days == null ? 'never met' : days + 'd ago'}</span>
+          ${me ? `<span class="pill warn">${me} for me</span>` : ''}
+          ${them ? `<span class="pill">${them} for them</span>` : ''}
+        </div></div>`;
+    }).join('')}</div>` : emptyState('No teachers yet',
+      'Add one — you only need a name. Journals, tasks and exam attribution build from there.',
+      actBtn('Add a teacher', 'addteacher')),
+      { sub: cold.length ? `${cold.length} need a 1-1` : 'sorted by how long since a 1-1' })}
+
     <div class="grid g-side">
+      ${panel('I owe them', owed.length ? `<div class="list">${owed.slice(0, 8).map(({ t, e }) => `
+        <div class="list-row click" data-teacher="${attr(t.id)}"><div class="grow">
+          <div class="t trunc">${esc(e.text)}</div><div class="m">${esc(t.name)}${e.date ? ' · ' + esc(fmtDay(e.date)) : ''}</div></div>
+        <span class="pill warn">open</span></div>`).join('')}</div>`
+        : emptyState('Nothing outstanding', 'Tasks you take on in a 1-1 appear here until you tick them off.'), { flush: true })}
+
       ${panel('Recent notes', recentNotes.length ? `<div class="list">${recentNotes.map((n) => `
         <div class="list-row click" data-note="${attr(n.id)}"><div class="grow"><div class="t trunc">${esc(n.title)}</div>
         <div class="m trunc">${esc(n.path || 'vault root')}</div></div>
         <span class="m">${esc(n.updated ? fmtDay(n.updated) : '')}</span></div>`).join('')}</div>`
-        : emptyState('Vault is empty', 'Use Quick note above, or import your Obsidian folder from the Notes page.'), { flush: true })}
+        : emptyState('Vault is empty', 'Capture something — it takes one line.', actBtn('Quick note', 'quicknote')), { flush: true })}
+    </div>
 
-      ${panel('Reports', DB.datasets.length ? `<div class="list">${DB.datasets.slice(0, 6).map((d) => `
-        <div class="list-row click" data-report="${attr(d.id)}"><div class="grow"><div class="t trunc">${esc(d.name)}</div>
-        <div class="m">${esc(d.kind)} · ${esc(d.week || '')} · ${d.rows.length} rows</div></div><span class="pill">open</span></div>`).join('')}</div>`
-        : emptyState('No CSVs yet', 'Drop your weekly exam export or the monthly survey on the Reports page.'), { flush: true })}
-    </div>`;
+    ${panel('Reports', DB.datasets.length ? `<div class="list">${DB.datasets.slice(0, 5).map((d) => `
+      <div class="list-row click" data-report="${attr(d.id)}"><div class="grow"><div class="t trunc">${esc(d.name)}</div>
+      <div class="m">${esc(d.kind)}${d.week ? ' · ' + esc(d.week) : ''} · ${d.rows.length} rows</div></div>
+      <span class="pill">open</span></div>`).join('')}</div>`
+      : emptyState('No CSVs yet', 'Drop the weekly exam export or the monthly survey and the engine does the rest.',
+        actBtn('Go to Reports', 'upload')), { flush: true })}`;
 
-  $('#newtask').addEventListener('click', () => taskDialog(null, 'work'));
-  $('#quicknote').addEventListener('click', quickNoteDialog);
+  const acts = {
+    quicknote: quickNoteDialog,
+    newtask: () => taskDialog(null, 'work'),
+    upload: () => go('work/reports'),
+    palette: () => openPalette(),
+    addteacher: () => go('work/teachers'),
+  };
+  on('[data-act]', 'click', (e, el) => { const fn = acts[el.dataset.act]; if (fn) fn(); }, view);
   on('[data-teacher]', 'click', (e, el) => go(`work/teachers/${el.dataset.teacher}`), view);
   on('[data-open-task]', 'click', (e, el) => { const t = taskById(el.dataset.openTask); if (t) taskDialog(t, 'work'); }, view);
   on('[data-note]', 'click', (e, el) => go(`shared/notes/${el.dataset.note}`), view);
@@ -2042,69 +2135,148 @@ function classesOn(dayIdx) { // 0 = Monday
   return (DB.uni.slots || []).filter((s) => Number(s.day) === dayIdx).sort((a, b) => (toMin(a.start) || 0) - (toMin(b.start) || 0));
 }
 
+/** The next class from right now, wrapping into next week if need be. */
+function nextClassFrom(now = new Date()) {
+  const slots = DB.uni.slots || [];
+  if (!slots.length) return null;
+  const todayIdx = (now.getDay() + 6) % 7;
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  let best = null;
+  slots.forEach((s) => {
+    const start = toMin(s.start);
+    if (start == null) return;
+    let dayGap = (Number(s.day) - todayIdx + 7) % 7;
+    if (dayGap === 0 && start <= nowMin) dayGap = 7;
+    const mins = dayGap * 1440 + start - nowMin;
+    if (!best || mins < best.mins) best = { slot: s, mins, dayGap };
+  });
+  return best;
+}
+const humanGap = (mins) => {
+  if (mins < 60) return `in ${mins} min`;
+  if (mins < 1440) { const h = Math.floor(mins / 60); const m = mins % 60; return `in ${h}h${m ? ' ' + m + 'm' : ''}`; }
+  const d = Math.round(mins / 1440);
+  return d === 1 ? 'tomorrow' : `in ${d} days`;
+};
+
 function renderUniOverview(view) {
   const sem = semester();
-  const today = (new Date().getDay() + 6) % 7; // 0 = Monday
-  const todays = today <= 5 ? classesOn(today) : [];
+  const todayIdx = (new Date().getDay() + 6) % 7;
+  const todays = todayIdx <= 5 ? classesOn(todayIdx) : [];
   const deadlines = deadlineRows('uni');
   const overdue = deadlines.filter((d) => daysUntil(d.due) < 0);
-  const ne = nextExam();
+  const dueToday = deadlines.filter((d) => daysUntil(d.due) === 0);
+  const soon = deadlines.filter((d) => { const n = daysUntil(d.due); return n > 0 && n <= 7; });
+  const exams = allExams().filter((e) => daysUntil(e.date) >= 0);
+  const ne = exams[0] || null;
+  const next = nextClassFrom();
+  const root = norm(DB.settings.konspektyRoot || '');
+  const konspekty = root ? DB.notes.filter((n) => norm(n.path).startsWith(root)).length : DB.notes.length;
 
-  topbar(greeting(), {
-    crumb: new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }),
-    actions: `<button class="btn primary" id="newtask">+ Task</button>`,
-  });
+  const lines = [];
+  if (sem) lines.push({ kind: '', html: `Week <b>${sem.week}</b> of ${sem.weeks} · <b>${sem.left}</b> days left` });
+  if (next) lines.push({ kind: 'good', html: `${esc(courseName(next.slot.courseId) || 'Class')} <b>${esc(humanGap(next.mins))}</b>` });
+  if (overdue.length) lines.push({ kind: 'bad', html: `<b>${overdue.length}</b> overdue` });
+  if (ne) lines.push({ kind: daysUntil(ne.date) <= 7 ? 'warn' : '', html: `${esc(ne.course)} exam <b>${esc(relDays(ne.date))}</b>` });
+  if (!lines.length) lines.push({ kind: '', html: 'Add your courses and timetable to bring this to life.' });
+
+  topbar(' ');
+  $('#topbar').innerHTML = '';
+
+  // a compact strip of the week — where the load actually sits
+  const dayHours = DAYS6.map((_, i) => round(sum(classesOn(i).map((s) => (toMin(s.end) - toMin(s.start)) / 60)), 1));
+  const maxHours = Math.max(0.5, ...dayHours);
+  const weekStrip = DAYS6.map((d, i) => {
+    const list = classesOn(i);
+    const hours = dayHours[i];
+    return `<div class="wday${i === todayIdx ? ' today' : ''}" data-goto="uni/timetable">
+      <div class="wd-name">${d}</div>
+      <div class="wd-bar"><i style="height:${Math.round((hours / maxHours) * 100)}%"></i></div>
+      <div class="wd-n num">${list.length || '–'}</div>
+      <div class="wd-h">${list.length ? hours + 'h' : ''}</div>
+    </div>`;
+  }).join('');
+
+  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
 
   view.innerHTML = `
+    ${hero(greeting(), new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }), lines,
+      `${actBtn('+ Task', 'newtask')}${actBtn('+ Class', 'newslot')}${actBtn('New konspekt', 'newnote')}
+       <button class="btn sm ghost" data-act="palette" title="Ctrl+K">⌘K search</button>`)}
+
     ${sem ? `<section class="panel"><div class="body">
       <div class="spread" style="margin-bottom:8px">
-        <div><span class="b">Semester week ${sem.week}</span> <span class="mut">of ${sem.weeks}</span></div>
-        <div class="mini num">${sem.left} days left · ${sem.pct}%</div>
+        <span class="b">Semester week ${sem.week} <span class="mut">of ${sem.weeks}</span></span>
+        <span class="mini num">${sem.pct}% · ${sem.left} days left</span>
       </div>
       <div class="bar"><i style="width:${sem.pct}%"></i></div>
       <div class="mini" style="margin-top:6px">${esc(fmtDate(toISO(sem.start)))} → ${esc(fmtDate(toISO(sem.end)))}</div>
     </div></section>`
-      : `<div class="empty"><strong>No semester dates yet</strong>Set the start and end in Settings to unlock the progress bar and week number.</div>`}
+      : emptyState('No semester dates yet', 'Set the start and end in Settings to unlock the progress bar and week number.',
+        actBtn('Open Settings', 'settings'))}
 
     <div class="stats">
-      ${statBox(DB.uni.courses.length, 'courses', `<div class="delta flat">${weeklyHours()} h/week</div>`)}
+      ${statBox(next ? humanGap(next.mins).replace('in ', '') : '—', 'until next class',
+        next ? `<div class="delta flat">${esc(courseName(next.slot.courseId) || 'Class')}${next.slot.room ? ' · ' + esc(next.slot.room) : ''}</div>` : '')}
       ${statBox(todays.length, 'classes today')}
-      ${statBox(overdue.length, 'overdue')}
+      ${statBox(overdue.length + dueToday.length, 'due now', soon.length ? `<div class="delta flat">${soon.length} this week</div>` : '')}
       ${statBox(ne ? daysUntil(ne.date) : '—', 'days to next exam', ne ? `<div class="delta flat">${esc(ne.course)}</div>` : '')}
     </div>
 
-    <div class="grid g-side">
-      ${panel("Today's classes", todays.length ? `<div class="list">${todays.map((s) => `
-        <div class="list-row click" data-slot="${attr(s.id)}"><div class="grow">
-          <div class="t">${esc(courseName(s.courseId) || 'Unassigned')}</div>
-          <div class="m">${esc(titleCase(s.type))}${s.room ? ' · ' + esc(s.room) : ''}</div></div>
-        <span class="pill num">${esc(s.start)}–${esc(s.end)}</span></div>`).join('')}</div>`
-        : emptyState(today > 5 ? 'Nothing on a Sunday' : 'No classes today', 'Add your week on the Timetable page.'), { flush: true })}
+    ${panel('Your week', `<div class="wstrip">${weekStrip}</div>`, {
+      sub: `${DB.uni.courses.length} courses · ${weeklyHours()} contact hours`,
+      actions: `<button class="btn sm" data-goto="uni/timetable">Timetable</button>`,
+    })}
 
-      ${panel('Deadlines', deadlines.length ? `<div class="list">${deadlines.slice(0, 10).map((d) => `
+    <div class="grid g-side">
+      ${panel("Today's classes", todays.length ? `<div class="list">${todays.map((s) => {
+        const running = toMin(s.start) <= nowMin && nowMin < toMin(s.end);
+        return `<div class="list-row click" data-goto="uni/courses/${attr(s.courseId)}">
+          <div class="grow"><div class="t">${esc(courseName(s.courseId) || 'Unassigned')} ${running ? '<span class="pill ok">now</span>' : ''}</div>
+            <div class="m">${esc(titleCase(s.type))}${s.room ? ' · ' + esc(s.room) : ''}</div></div>
+          <span class="pill num">${esc(s.start)}–${esc(s.end)}</span></div>`;
+      }).join('')}</div>` : emptyState(todayIdx > 5 ? 'Nothing on a Sunday' : 'No classes today',
+        'Your week is built on the Timetable page.', actBtn('Add a class', 'newslot')), { flush: true })}
+
+      ${panel('Deadlines', deadlines.length ? `<div class="list">${deadlines.slice(0, 8).map((d) => `
         <div class="list-row click" data-open-task="${attr(d.id)}"><div class="grow">
           <div class="t trunc">${esc(d.label)}</div><div class="m">${d.kind === 'step' ? 'step' : 'final deadline'}</div></div>
         <span class="pill ${dueClass(d.due)}">${esc(relDays(d.due))}</span></div>`).join('')}</div>`
-        : emptyState('Nothing due', 'Add a task with steps and every step deadline shows up here.'), { flush: true })}
+        : emptyState('Nothing due', 'Break a task into steps and every step deadline shows up here.',
+          actBtn('Add a task', 'newtask')), { flush: true })}
     </div>
 
     <div class="grid g-side">
-      ${panel('Exams', allExams().length ? `<div class="list">${allExams().slice(0, 8).map((e) => `
-        <div class="list-row click" data-course="${attr(e.courseId)}"><div class="grow">
-          <div class="t">${esc(e.course)}</div><div class="m">${esc(fmtDate(e.date))}${e.time ? ' · ' + esc(e.time) : ''}${e.room ? ' · ' + esc(e.room) : ''}</div></div>
-        <span class="pill ${dueClass(e.date)}">${esc(relDays(e.date))}</span></div>`).join('')}</div>`
-        : emptyState('No exams scheduled', 'Open a course and add its exam date — the countdown appears everywhere.'), { flush: true })}
+      ${panel('Exams', exams.length ? `<div class="exgrid">${exams.slice(0, 6).map((e) => {
+        const n = daysUntil(e.date);
+        return `<div class="excard tone-${n <= 3 ? 'bad' : n <= 10 ? 'warn' : 'ok'}" data-goto="uni/courses/${attr(e.courseId)}">
+          <div class="exdays num">${n}</div><div class="exlab">days</div>
+          <div class="exname trunc">${esc(e.course)}</div>
+          <div class="exwhen">${esc(fmtDate(e.date, { day: 'numeric', month: 'short' }))}${e.time ? ' · ' + esc(e.time) : ''}${e.room ? ' · ' + esc(e.room) : ''}</div>
+        </div>`;
+      }).join('')}</div>` : emptyState('No exams scheduled', 'Add a date on a course and the countdown appears everywhere.',
+        actBtn('Open courses', 'courses')))}
 
-      ${panel('Courses', DB.uni.courses.length ? `<div class="list">${DB.uni.courses.map((c) => `
-        <div class="list-row click" data-course="${attr(c.id)}"><div class="grow">
-          <div class="t">${esc(c.name)}</div><div class="m">${esc(c.code || '')}${c.instructor ? ' · ' + esc(c.instructor) : ''}</div></div>
-        <span class="pill">${slotsOf(c.id).length} slots</span></div>`).join('')}</div>`
-        : emptyState('No courses yet', 'Add courses first — the timetable, exams and konspekty all hang off them.'), { flush: true })}
+      ${panel('Courses', DB.uni.courses.length ? `<div class="list">${DB.uni.courses.map((c) => {
+        const open = DB.tasks.filter((t) => t.face === 'uni' && t.course === c.id && t.status !== 'done').length;
+        return `<div class="list-row click" data-goto="uni/courses/${attr(c.id)}"><div class="grow">
+          <div class="t">${esc(c.name)}</div><div class="m">${esc(c.code || 'no code')}${c.instructor ? ' · ' + esc(c.instructor) : ''}</div></div>
+          ${open ? `<span class="pill warn">${open} open</span>` : ''}
+          <span class="pill">${slotsOf(c.id).length} slots</span></div>`;
+      }).join('')}</div>` : emptyState('No courses yet', 'Everything else hangs off courses — start with one.',
+        actBtn('Add a course', 'courses')), { flush: true, sub: `${konspekty} konspekty in the vault` })}
     </div>`;
 
-  $('#newtask').addEventListener('click', () => taskDialog(null, 'uni'));
-  on('[data-course]', 'click', (e, el) => go(`uni/courses/${el.dataset.course}`), view);
-  on('[data-slot]', 'click', (e, el) => go('uni/timetable'), view);
+  const acts = {
+    newtask: () => taskDialog(null, 'uni'),
+    newslot: () => slotDialog(null),
+    newnote: () => { const n = createNote({ title: 'Untitled', path: DB.settings.konspektyRoot || '' }); go(`uni/konspekty/${n.id}`); },
+    palette: () => openPalette(),
+    settings: () => go('shared/settings'),
+    courses: () => go('uni/courses'),
+  };
+  on('[data-act]', 'click', (e, el) => { const fn = acts[el.dataset.act]; if (fn) fn(); }, view);
+  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
   on('[data-open-task]', 'click', (e, el) => { const t = taskById(el.dataset.openTask); if (t) taskDialog(t, 'uni'); }, view);
 }
 PAGES['uni/overview'] = renderUniOverview;
@@ -3885,4 +4057,133 @@ window.addEventListener('resize', () => {
 });
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && document.body.classList.contains('zen')) document.body.classList.remove('zen');
+});
+
+/* ========================================================= command palette */
+/* ⌘K / Ctrl+K. Everything on the desk reachable in two keystrokes. */
+
+function paletteItems() {
+  const items = [];
+  const add = (kind, label, sub, run, weight = 0) => items.push({ kind, label, sub, run, weight });
+
+  // actions first — they are what you reach for mid-thought
+  add('action', 'New task · work', 'Kanban card on the work face', () => taskDialog(null, 'work'), 5);
+  add('action', 'New task · university', 'Kanban card on the CAU face', () => taskDialog(null, 'uni'), 5);
+  add('action', 'Quick note', 'One textarea, files into the vault', quickNoteDialog, 5);
+  add('action', 'Add transaction', 'Money in or out', () => { go('shared/finances'); setTimeout(() => txDialog(null), 60); }, 5);
+  add('action', 'Log a 1-1', 'Open a teacher journal', () => go('work/teachers'), 4);
+  add('action', 'Upload a CSV', 'Exam export or the quality survey', () => go('work/reports'), 4);
+
+  // pages
+  Object.entries(NAV).forEach(([face, pages]) => pages.forEach((p) => {
+    const where = face === 'work' ? 'SATashkent' : face === 'uni' ? 'CAU' : 'Everywhere';
+    add('page', p.label, where, () => go(`${face}/${p.id}`), 3);
+  }));
+
+  // the things themselves
+  DB.teachers.forEach((t) => add('teacher', t.name, t.left ? 'former teacher' : (t.teaches || 'teacher'), () => go(`work/teachers/${t.id}`), 2));
+  DB.tasks.filter((t) => t.status !== 'done').forEach((t) =>
+    add('task', t.title, `${t.face === 'work' ? 'work' : 'CAU'} task${t.due ? ' · ' + relDays(t.due) : ''}`, () => taskDialog(t, t.face), 2));
+  (DB.uni.courses || []).forEach((c) => add('course', c.name, c.code || 'course', () => go(`uni/courses/${c.id}`), 2));
+  DB.notes.forEach((n) => add('note', n.title, n.path || 'vault root', () => go(`shared/notes/${n.id}`), 1));
+  DB.datasets.forEach((d) => add('report', d.name, `${d.kind} · ${d.rows.length} rows`, () => go(`work/reports/${d.id}`), 1));
+
+  return items;
+}
+
+/** Subsequence match, so "lnalg" finds "Linear Algebra". */
+function fuzzyScore(needle, hay) {
+  const n = norm(needle), h = norm(hay);
+  if (!n) return 0.001;
+  if (h.startsWith(n)) return 100 - h.length * 0.01;
+  const at = h.indexOf(n);
+  if (at >= 0) return 60 - at - h.length * 0.01;
+  let i = 0, score = 0, streak = 0;
+  for (const ch of h) {
+    if (ch === n[i]) { i++; streak++; score += 1 + streak; }
+    else streak = 0;
+    if (i === n.length) break;
+  }
+  return i === n.length ? score * 0.4 : -1;
+}
+
+const KIND_ICON = { action: '⌁', page: '◇', teacher: '☺', task: '▤', course: '❐', note: '✦', report: '▦' };
+
+let paletteOpen = false;
+function openPalette(prefill = '') {
+  if (paletteOpen) return;
+  paletteOpen = true;
+  $$('dialog.palette').forEach((d) => d.remove()); // never let one accumulate
+  const all = paletteItems();
+  const dlg = document.createElement('dialog');
+  dlg.className = 'palette';
+  dlg.innerHTML = `<div class="pal-in">
+      <input id="palq" placeholder="Search teachers, tasks, notes, courses — or type an action" autocomplete="off" value="${attr(prefill)}">
+      <div id="palres" class="pal-res"></div>
+      <div class="pal-foot"><span>↑↓ move</span><span>↵ open</span><span>esc close</span></div>
+    </div>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', () => { paletteOpen = false; dlg.remove(); });
+
+  const input = $('#palq', dlg);
+  const res = $('#palres', dlg);
+  let matches = [];
+  let cursor = 0;
+
+  const draw = () => {
+    const q = input.value.trim();
+    matches = all
+      .map((it) => {
+        // the weight only ranks genuine matches — it must never rescue a non-match
+        const base = Math.max(fuzzyScore(q, it.label), fuzzyScore(q, it.sub) * 0.5);
+        return { it, s: base > 0 ? base + it.weight : -1 };
+      })
+      .filter((m) => m.s > 0)
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 40)
+      .map((m) => m.it);
+    cursor = 0;
+    res.innerHTML = matches.length
+      ? matches.map((m, i) => `<div class="pal-row${i === 0 ? ' on' : ''}" data-i="${i}">
+          <span class="pal-ico">${KIND_ICON[m.kind] || '·'}</span>
+          <span class="pal-label">${esc(m.label)}</span>
+          <span class="pal-sub">${esc(m.sub)}</span></div>`).join('')
+      : `<div class="pal-empty">Nothing matches “${esc(q)}”. Try fewer letters.</div>`;
+  };
+  const move = (by) => {
+    if (!matches.length) return;
+    cursor = (cursor + by + matches.length) % matches.length;
+    $$('.pal-row', res).forEach((r, i) => r.classList.toggle('on', i === cursor));
+    const on = $('.pal-row.on', res);
+    if (on) on.scrollIntoView({ block: 'nearest' });
+  };
+  const run = (i) => {
+    const item = matches[i];
+    if (!item) return;
+    dlg.close();
+    setTimeout(() => item.run(), 10);
+  };
+
+  input.addEventListener('input', draw);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+    else if (e.key === 'Enter') { e.preventDefault(); run(cursor); }
+  });
+  res.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-i]');
+    if (row) run(Number(row.dataset.i));
+  });
+
+  draw();
+  dlg.showModal();
+  input.focus();
+  input.select();
+}
+
+window.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    openPalette();
+  }
 });
