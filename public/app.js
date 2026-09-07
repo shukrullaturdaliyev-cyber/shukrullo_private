@@ -251,7 +251,7 @@ const DEFAULTS = () => ({
   settings: {
     name: 'Shukrullo',
     currency: 'UZS',
-    usdRate: 12600,
+    usdRate: 11850,
     semStart: '',
     semEnd: '',
     konspektyRoot: 'CAU',
@@ -2950,7 +2950,7 @@ let finLast = { accountId: '', category: '', currency: 'UZS', sign: -1 };
 /** Current USD rate (UZS per 1 USD). Used for display conversion and as the
  *  default when entering a new USD transaction; each transaction keeps the
  *  rate it was actually entered at. */
-const usdRate = () => Number(DB.settings.usdRate) || 12600;
+const usdRate = () => Number(DB.settings.usdRate) || 11850;
 
 function ensureFinances() {
   const f = DB.finances;
@@ -3939,7 +3939,7 @@ function renderSettings(view) {
         <label class="f"><span>Name (used in greetings)</span><input id="s_name" value="${attr(s.name)}"></label>
         <div class="row">
           <label class="f"><span>Main currency</span><input id="s_cur" value="${attr(s.currency)}" placeholder="UZS"></label>
-          <label class="f"><span>USD rate — UZS per 1 USD</span><input id="s_rate" inputmode="decimal" value="${attr(s.usdRate || 12600)}"></label>
+          <label class="f"><span>USD rate — UZS per 1 USD</span><input id="s_rate" inputmode="decimal" value="${attr(s.usdRate || 11850)}"></label>
         </div>
         <p class="mini" style="margin-top:-4px">Used to convert totals when you switch the Finances page to USD, and prefilled when you enter a dollar transaction. Each transaction keeps the rate it was actually entered at.</p>
         <div class="row">
@@ -3981,7 +3981,7 @@ function renderSettings(view) {
     Object.assign(s, {
       name: $('#s_name').value.trim(), currency: $('#s_cur').value.trim().toUpperCase() || 'UZS',
       semStart: $('#s_ss').value, semEnd: $('#s_se').value,
-      usdRate: num($('#s_rate').value) || 12600,
+      usdRate: num($('#s_rate').value) || 11850,
       konspektyRoot: cleanPath($('#s_root').value), calcom: $('#s_cal').value.trim(),
     });
     saveRender('settings');
