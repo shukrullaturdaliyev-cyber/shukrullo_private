@@ -228,11 +228,24 @@ function confirmDialog(title, message, onYes, yesLabel = 'Delete') {
 }
 
 /* misc dom */
+
+/** Delegated listeners bound while a page was drawing. A page is redrawn on
+ *  every save, so without collecting these the same handler would be attached
+ *  again on each pass and one click would fire it as many times as the page had
+ *  rendered — stacking a dialog per render. */
+let pageBinds = [];
+let bindingPage = false;
 function on(sel, evt, fn, root = document) {
-  root.addEventListener(evt, (e) => {
+  const handler = (e) => {
     const t = e.target.closest(sel);
     if (t && root.contains(t)) fn(e, t);
-  });
+  };
+  root.addEventListener(evt, handler);
+  if (bindingPage) pageBinds.push({ root, evt, handler });
+}
+function dropPageBinds() {
+  pageBinds.forEach(({ root, evt, handler }) => root.removeEventListener(evt, handler));
+  pageBinds = [];
 }
 function download(filename, text, mime = 'application/json') {
   const url = URL.createObjectURL(new Blob([text], { type: mime }));
@@ -685,7 +698,7 @@ function topbar(title, { crumb = '', actions = '' } = {}) {
   if (window.matchMedia('(max-width: 900px)').matches) {
     const seg = $('#faceseg-m');
     seg.style.display = '';
-    on('#faceseg-m button', 'click', (e, b) => switchFace(b.dataset.face));
+    on('#faceseg-m button', 'click', (e, b) => switchFace(b.dataset.face), seg);
   }
 }
 
@@ -696,16 +709,23 @@ function render() {
   if (!$('#view')) return; // login screen is up — leave its theme alone
   document.documentElement.setAttribute('data-theme', themeFor(r));
   renderNav();
+  // Both halves of the page frame outlive a render, so anything a page bound
+  // straight onto them has to go with the old nodes.
+  dropPageBinds();
+  ['#topbar', '#view'].forEach((sel) => { const el = $(sel); el.replaceWith(el.cloneNode(false)); });
   const key = `${r.face}/${r.page}`;
   const fn = PAGES[key];
   const view = $('#view');
   view.scrollTop = 0;
   if (!fn) { view.innerHTML = emptyState('Nothing here', 'That page does not exist — pick one from the sidebar.'); return; }
+  bindingPage = true;
   try {
     fn(view, r);
   } catch (err) {
     console.error(err);
     view.innerHTML = emptyState('This page hit an error', String(err && err.message || err));
+  } finally {
+    bindingPage = false;
   }
   if (r.page !== 'notes' && r.page !== 'konspekty') document.body.classList.remove('zen');
 }
