@@ -4803,6 +4803,155 @@ ${f.ahead.length ? f.ahead.map((d) => `- ${d.due} · ${d.label}`).join('\n') : '
 `;
 }
 
+/* ------------------------------------------------------------ 9d. health log */
+
+const healthDays = () => (DB.health.days || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+const healthOn = (iso) => (DB.health.days || []).find((d) => d.date === iso) || null;
+
+/** Minutes between two clock times, treating a bedtime before midnight as the night before. */
+function sleepMinutes(d) {
+  if (!d || !d.bed || !d.woke) return null;
+  const a = toMin(d.bed), b = toMin(d.woke);
+  if (a == null || b == null) return null;
+  return b >= a ? b - a : (1440 - a) + b;
+}
+const hhmm = (mins) => (mins == null ? '—' : `${Math.floor(mins / 60)}h ${String(Math.round(mins % 60)).padStart(2, '0')}m`);
+
+/** One row per day, newest first, with the fields actually filled in. */
+function healthDialog(existing, presetDate) {
+  const d = existing || { id: uid(), date: presetDate || todayISO(), bed: '', woke: '', weight: '', workout: '', minutes: '', note: '' };
+  openDialog({
+    title: existing ? `Log · ${fmtDate(d.date)}` : 'Log a day',
+    body: `
+      <label class="f"><span>Day</span><input name="date" type="date" value="${attr(d.date)}"></label>
+      <div class="row">
+        <label class="f"><span>Lights out</span><input name="bed" type="time" value="${attr(d.bed || '')}"></label>
+        <label class="f"><span>Woke</span><input name="woke" type="time" value="${attr(d.woke || '')}"></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Weight (kg)</span><input name="weight" inputmode="decimal" value="${attr(d.weight || '')}" placeholder="72.4"></label>
+        <label class="f"><span>Workout</span><input name="workout" value="${attr(d.workout || '')}" placeholder="Gym · push"></label>
+        <label class="f"><span>Minutes</span><input name="minutes" type="number" min="0" max="600" value="${attr(d.minutes || '')}"></label>
+      </div>
+      <label class="f"><span>Note</span><input name="note" value="${attr(d.note || '')}" placeholder="Woke twice, room too warm"></label>
+      <p class="mini">Fill in only what you know — every field is optional, and a day with nothing in it is not kept.</p>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delday">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delday', dlg);
+      if (del) del.addEventListener('click', () => {
+        DB.health.days = (DB.health.days || []).filter((x) => x.id !== d.id);
+        close(); saveRender('health'); toast('Day removed');
+      });
+    },
+    onSubmit: (data) => {
+      const date = data.date || todayISO();
+      const w = num(data.weight);
+      const next = {
+        ...d, date, bed: data.bed || '', woke: data.woke || '',
+        weight: w == null ? '' : w, workout: data.workout.trim(),
+        minutes: data.minutes === '' ? '' : clamp(Number(data.minutes) || 0, 0, 600),
+        note: data.note.trim(),
+      };
+      const empty = !next.bed && !next.woke && next.weight === '' && !next.workout && next.minutes === '' && !next.note;
+      if (empty) { toast('Nothing to log — fill in at least one field.', 'bad'); return false; }
+      // One row per calendar day. Editing a day means blanks clear a field, but a
+      // fresh log landing on a day that already exists only fills the gaps — it
+      // must never wipe last night's sleep just because this form left it empty.
+      const clash = (DB.health.days || []).find((x) => x.date === date && x.id !== d.id);
+      let row = next;
+      if (clash) {
+        row = { ...clash, date };
+        Object.keys(next).forEach((k) => {
+          if (k === 'id' || k === 'date') return;
+          const v = next[k];
+          if (existing || !(v === '' || v == null)) row[k] = v;
+        });
+      }
+      DB.health.days = [...(DB.health.days || []).filter((x) => x.id !== d.id && x.id !== (clash || {}).id), row];
+      saveRender('health');
+    },
+  });
+}
+
+function renderHealth(view) {
+  const days = healthDays();
+  const last30 = days.filter((d) => d.date >= toISO(addDays(new Date(), -29)));
+  const sleeps = last30.map(sleepMinutes).filter((v) => v != null);
+  const weights = days.filter((d) => d.weight !== '' && d.weight != null);
+  const lastW = weights[weights.length - 1];
+  const monthAgo = weights.filter((d) => d.date <= toISO(addDays(new Date(), -30))).slice(-1)[0];
+  const workouts = last30.filter((d) => d.workout);
+  const thisWeek = weekDays().filter((iso) => { const h = healthOn(iso); return h && h.workout; }).length;
+  const tonight = healthOn(todayISO());
+
+  topbar('Health', { actions: `<button class="btn primary" id="newday">+ Log a day</button>` });
+
+  const sleepSeries = last30.map((d) => ({ x: d.date, y: round((sleepMinutes(d) || 0) / 60, 2) })).filter((p) => p.y > 0);
+  const weightSeries = weights.slice(-90).map((d) => ({ x: d.date, y: Number(d.weight) }));
+
+  view.innerHTML = `
+    <div class="stats">
+      ${statBox(sleeps.length ? hhmm(mean(sleeps)) : '—', 'average sleep, 30 days',
+        sleeps.length ? `<div class="delta flat">${sleeps.filter((m) => m < 360).length} night${sleeps.filter((m) => m < 360).length === 1 ? '' : 's'} under 6h</div>` : '')}
+      ${statBox(lastW ? `${lastW.weight} kg` : '—', 'latest weight',
+        lastW && monthAgo ? deltaHTML(Number(lastW.weight), Number(monthAgo.weight), { p: 1, unit: ' kg', lowerIsBetter: true }) : '')}
+      ${statBox(thisWeek, 'workouts this week', `<div class="delta flat">${workouts.length} in 30 days</div>`)}
+      ${statBox(days.length, 'days logged',
+        tonight ? `<div class="delta up">today is in</div>` : `<div class="delta flat">today not yet</div>`)}
+    </div>
+
+    ${days.length ? `
+      <div class="grid g2">
+        ${panel('Sleep', sleepSeries.length > 1
+          ? `<div class="chart-wrap"><canvas id="sleepchart"></canvas></div>`
+          : emptyState('Not enough nights yet', 'Log lights-out and waking for a couple of days and the line appears.'), { sub: 'hours a night, last 30 days' })}
+        ${panel('Weight', weightSeries.length > 1
+          ? `<div class="chart-wrap"><canvas id="weightchart"></canvas></div>`
+          : emptyState('Not enough readings yet', 'Two weigh-ins and this becomes a trend.'), { sub: 'kg, last 90 readings' })}
+      </div>
+
+      ${panel('The log', `<div class="list">${days.slice().reverse().slice(0, 40).map((d) => {
+        const m = sleepMinutes(d);
+        const short = m != null && m < 360;
+        return `<div class="list-row click" data-day="${attr(d.id)}">
+          <div style="flex:0 0 92px"><div class="t num">${esc(fmtDate(d.date, { day: 'numeric', month: 'short' }))}</div>
+            <div class="m">${esc(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][(fromISO(d.date).getDay() + 6) % 7])}</div></div>
+          <div class="grow">
+            <div class="t">${m != null ? `${esc(hhmm(m))} <span class="mut">${esc(d.bed)} → ${esc(d.woke)}</span>${short ? ' <span class="pill warn">short</span>' : ''}` : '<span class="mut">no sleep logged</span>'}</div>
+            <div class="m">${[d.workout ? esc(d.workout) + (d.minutes ? ` · ${d.minutes}m` : '') : '', d.note ? esc(d.note) : ''].filter(Boolean).join(' · ') || '&nbsp;'}</div>
+          </div>
+          ${d.weight !== '' && d.weight != null ? `<span class="pill num">${esc(d.weight)} kg</span>` : ''}</div>`;
+      }).join('')}</div>`, { flush: true, sub: 'click a row to edit it' })}
+    ` : emptyState('Nothing logged yet', 'Sleep, weight and workouts — one row a day, only the fields you care about.', actBtn('Log today', 'newday'))}`;
+
+  if (sleepSeries.length > 1) {
+    drawChart('sleepchart', {
+      type: 'line',
+      data: { labels: sleepSeries.map((p) => p.x), datasets: [{
+        label: 'hours', data: sleepSeries.map((p) => p.y), borderColor: PALETTE[5], backgroundColor: PALETTE[5] + '22',
+        tension: 0.3, fill: true, pointRadius: 2, borderWidth: 2 }] },
+      options: { plugins: { legend: { display: false } }, scales: { y: { suggestedMin: 4, suggestedMax: 10 } } },
+    });
+  }
+  if (weightSeries.length > 1) {
+    drawChart('weightchart', {
+      type: 'line',
+      data: { labels: weightSeries.map((p) => p.x), datasets: [{
+        label: 'kg', data: weightSeries.map((p) => p.y), borderColor: PALETTE[6], backgroundColor: PALETTE[6] + '22',
+        tension: 0.25, fill: true, pointRadius: 2, borderWidth: 2 }] },
+      options: { plugins: { legend: { display: false } } },
+    });
+  }
+
+  $('#newday').addEventListener('click', () => healthDialog(healthOn(todayISO())));
+  on('[data-act=newday]', 'click', () => healthDialog(null), view);
+  on('[data-day]', 'click', (e, el) => {
+    const d = (DB.health.days || []).find((x) => x.id === el.dataset.day);
+    if (d) healthDialog(d);
+  }, view);
+}
+PAGES['shared/health'] = renderHealth;
+
 /* ------------------------------------------------------------------- init */
 window.addEventListener('DOMContentLoaded', boot);
 let resizeTimer;
@@ -4831,6 +4980,7 @@ function paletteItems() {
   add('action', 'New goal', 'Year, quarter or month', () => goalDialog(null), 4);
   add('action', 'Weekly review', 'What closed, what slipped, what next', () => { go('shared/goals'); setTimeout(reviewDialog, 60); }, 4);
   add('action', 'Daily note', 'Today\u2019s page in the vault', openDailyNote, 4);
+  add('action', 'Log sleep or weight', 'Today\u2019s row in the health log', () => healthDialog(healthOn(todayISO())), 4);
   add('action', 'Log a 1-1', 'Open a teacher journal', () => go('work/teachers'), 4);
   add('action', 'Upload a CSV', 'Exam export or the quality survey', () => go('work/reports'), 4);
 
