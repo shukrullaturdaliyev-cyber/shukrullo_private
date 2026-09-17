@@ -2122,10 +2122,16 @@ function allExams() {
     .filter((e) => e.date).sort((a, b) => a.date.localeCompare(b.date));
 }
 function nextExam() { return allExams().find((e) => daysUntil(e.date) >= 0) || null; }
+/** Whichever ends of the semester are known. Either side may be null; a
+ *  backwards range counts as nothing set at all. */
+function semesterWindow() {
+  const a = fromISO(DB.settings.semStart), b = fromISO(DB.settings.semEnd);
+  if (a && b && b <= a) return { start: null, end: null };
+  return { start: a, end: b };
+}
 function semester() {
-  const { semStart, semEnd } = DB.settings;
-  const a = fromISO(semStart), b = fromISO(semEnd);
-  if (!a || !b || b <= a) return null;
+  const { start: a, end: b } = semesterWindow();
+  if (!a || !b) return null;
   const now = new Date();
   const total = daysBetween(a, b);
   const gone = clamp(daysBetween(a, now), 0, total);
@@ -2161,6 +2167,7 @@ const humanGap = (mins) => {
 
 function renderUniOverview(view) {
   const sem = semester();
+  const semWin = semesterWindow();
   const todayIdx = (new Date().getDay() + 6) % 7;
   const todays = todayIdx <= 5 ? classesOn(todayIdx) : [];
   const deadlines = deadlineRows('uni');
@@ -2211,6 +2218,13 @@ function renderUniOverview(view) {
       </div>
       <div class="bar"><i style="width:${sem.pct}%"></i></div>
       <div class="mini" style="margin-top:6px">${esc(fmtDate(toISO(sem.start)))} → ${esc(fmtDate(toISO(sem.end)))}</div>
+    </div></section>`
+      : semWin.start ? `<section class="panel"><div class="body">
+      <div class="spread" style="margin-bottom:6px">
+        <span class="b">Semester week ${Math.floor(Math.max(0, daysBetween(semWin.start, new Date())) / 7) + 1}</span>
+        <span class="mini">${actBtn('Add the end date', 'settings')}</span>
+      </div>
+      <div class="mini">Started ${esc(fmtDate(toISO(semWin.start)))} — the progress bar needs an end date too.</div>
     </div></section>`
       : emptyState('No semester dates yet', 'Set the start and end in Settings to unlock the progress bar and week number.',
         actBtn('Open Settings', 'settings'))}
@@ -3525,13 +3539,15 @@ function rangeFor(view, anchor) {
 function deskEvents(from, to) {
   const out = [];
   const h = hidden();
-  const sem = semester();
+  const sem = semesterWindow();
 
   if (!h.has('timetable')) {
     (DB.uni.slots || []).forEach((s) => {
       for (let d = new Date(from); d < to; d = addDays(d, 1)) {
         if (((d.getDay() + 6) % 7) !== Number(s.day)) continue;
-        if (sem && (startOfDay(d) < startOfDay(sem.start) || startOfDay(d) > startOfDay(sem.end))) continue;
+        // Clamp each end on its own, so half a semester still bounds the classes.
+        if (sem.start && startOfDay(d) < startOfDay(sem.start)) continue;
+        if (sem.end && startOfDay(d) > startOfDay(sem.end)) continue;
         out.push({
           id: 'tt-' + s.id + '-' + toISO(d), title: courseName(s.courseId) || 'Class',
           start: atTime(d, s.start), end: atTime(d, s.end), allDay: false,
