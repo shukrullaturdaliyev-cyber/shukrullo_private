@@ -683,3 +683,13 @@ dialog.palette {
   .hmap-name { flex-basis: 84px; }
   .hmap-cells { grid-template-columns: repeat(42, 1fr); }
 }
+
+/* ---------- goals ---------- */
+.goals { display: grid; gap: 12px; }
+.goal {
+  background: var(--s2); border: 1px solid var(--line); border-radius: var(--r-ctl);
+  padding: 13px 14px;
+}
+.goal .gtitle { font-size: 14.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.goal .gpct { font-size: 20px; font-weight: 600; flex: 0 0 auto; padding-left: 12px; }
+.goal .list { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-ctl); overflow: hidden; }

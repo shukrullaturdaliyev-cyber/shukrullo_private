@@ -812,6 +812,8 @@ function taskDialog(existing, face, presetCourse) {
       <label class="f"><span>Final deadline</span><input name="due" type="date" value="${attr(t.due || '')}"></label>
       <label class="f"><span>Status</span><select name="status">${STATUSES.map(([v, l]) => `<option value="${v}"${t.status === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     </div>
+    ${goalsOpen().length ? `<label class="f"><span>Serves goal</span><select name="goal"><option value="">— none —</option>
+      ${goalsOpen().map((g) => `<option value="${attr(g.id)}"${t.goal === g.id ? ' selected' : ''}>${esc(g.title)}</option>`).join('')}</select></label>` : ''}
     ${face === 'uni' ? `<label class="f"><span>Course</span><select name="course"><option value="">— none —</option>
       ${courses.map((c) => `<option value="${attr(c.id)}"${t.course === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}
     <div class="row">
@@ -863,6 +865,7 @@ function taskDialog(existing, face, presetCourse) {
       Object.assign(t, {
         title, due: data.due || '', link: data.link.trim(), notes: data.notes,
         course: data.course || '', status: data.status, progress: Number(data.progress) || 0,
+        goal: data.goal == null ? (t.goal || '') : data.goal,
         steps: steps.filter((s) => s.text.trim()).map((s) => ({ ...s, text: s.text.trim() })),
         repeat: data.rev ? {
           every: data.rev, interval: clamp(Number(data.rint) || 1, 1, 52),
@@ -4513,6 +4516,293 @@ function renderToday(view) {
 }
 PAGES['shared/today'] = renderToday;
 
+/* --------------------------------------------- 9c. goals + the weekly review */
+
+const HORIZONS = [['year', 'This year'], ['quarter', 'This quarter'], ['month', 'This month']];
+const goalItems = () => DB.goals.items || [];
+const goalById = (id) => goalItems().find((g) => g.id === id);
+const tasksForGoal = (id) => DB.tasks.filter((t) => t.goal === id);
+
+/** A goal is as far along as the tasks under it — or its own slider if it has none. */
+function goalProgress(g) {
+  const linked = tasksForGoal(g.id);
+  if (!linked.length) return { pct: clamp(Number(g.progress) || 0, 0, 100), from: 'slider', done: 0, total: 0 };
+  const ratios = linked.map((t) => (t.status === 'done' ? 1 : taskProgress(t).ratio));
+  return {
+    pct: Math.round((sum(ratios) / linked.length) * 100), from: 'tasks',
+    done: linked.filter((t) => t.status === 'done').length, total: linked.length,
+  };
+}
+const goalsOpen = () => goalItems().filter((g) => !g.done);
+
+/** The window a horizon covers, so "this quarter" means something on any date. */
+function horizonRange(h, now = new Date()) {
+  const y = now.getFullYear();
+  if (h === 'year') return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), label: String(y) };
+  if (h === 'month') return { start: new Date(y, now.getMonth(), 1), end: new Date(y, now.getMonth() + 1, 0),
+    label: now.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) };
+  const q = Math.floor(now.getMonth() / 3);
+  return { start: new Date(y, q * 3, 1), end: new Date(y, q * 3 + 3, 0), label: `${y} · Q${q + 1}` };
+}
+
+function goalDialog(existing) {
+  const g = existing || { id: uid(), title: '', horizon: 'quarter', why: '', target: '', due: '', progress: 0, done: false, created: todayISO() };
+  openDialog({
+    title: existing ? 'Edit goal' : 'New goal',
+    body: `
+      <label class="f"><span>Goal</span><input name="title" value="${attr(g.title)}" placeholder="What is true when this is done"></label>
+      <div class="row">
+        <label class="f"><span>Horizon</span><select name="horizon">
+          ${HORIZONS.map(([v, l]) => `<option value="${v}"${g.horizon === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+        <label class="f"><span>Deadline (optional)</span><input name="due" type="date" value="${attr(g.due || '')}"></label>
+      </div>
+      <label class="f"><span>Why it matters</span><textarea name="why" rows="2" placeholder="The reason you will still care in November">${esc(g.why || '')}</textarea></label>
+      <label class="f"><span>How you will know</span><input name="target" value="${attr(g.target || '')}" placeholder="e.g. every teacher observed twice"></label>
+      <label class="f"><span>Progress (used only while no tasks are linked)</span>
+        <input name="progress" type="range" min="0" max="100" step="5" value="${attr(g.progress || 0)}"></label>
+      ${existing ? `<label class="f"><span><input type="checkbox" name="done"${g.done ? ' checked' : ''}> Achieved</span></label>` : ''}`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delgoal">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delgoal', dlg);
+      if (del) del.addEventListener('click', () => {
+        const n = tasksForGoal(g.id).length;
+        confirmDialog('Delete goal', `“${g.title}” goes. ${n ? `${n} task${n === 1 ? '' : 's'} stay, but lose the link.` : 'No tasks are linked.'}`, () => {
+          DB.goals.items = goalItems().filter((x) => x.id !== g.id);
+          DB.tasks.forEach((t) => { if (t.goal === g.id) t.goal = ''; });
+          close(); saveRender('goals', 'tasks'); toast('Goal deleted');
+        });
+      });
+    },
+    onSubmit: (data) => {
+      const title = data.title.trim();
+      if (!title) { toast('A goal needs a title.', 'bad'); return false; }
+      Object.assign(g, {
+        title, horizon: data.horizon, why: data.why.trim(), target: data.target.trim(),
+        due: data.due || '', progress: Number(data.progress) || 0, done: !!data.done,
+      });
+      if (!existing) DB.goals.items.push(g);
+      saveRender('goals');
+    },
+  });
+}
+
+/** Attach a task to a goal from the goal side, where the thinking happens. */
+function linkTasksDialog(g) {
+  const pool = DB.tasks.filter((t) => t.status !== 'done' || t.goal === g.id);
+  if (!pool.length) { toast('No open tasks to link yet.', 'bad'); return; }
+  openDialog({
+    title: 'Tasks under this goal',
+    submitLabel: 'Link',
+    body: `<p class="mini">Ticked tasks roll up into “${esc(g.title)}”. A task belongs to one goal.</p>
+      <div class="list">${pool.map((t) => `<label class="list-row" style="cursor:pointer">
+        <input type="checkbox" name="t_${attr(t.id)}"${t.goal === g.id ? ' checked' : ''}>
+        <div class="grow"><div class="t">${esc(t.title)}</div>
+          <div class="m">${t.face === 'work' ? 'SATashkent' : 'CAU'}${t.due ? ' · ' + esc(fmtDay(t.due)) : ''}${t.goal && t.goal !== g.id ? ' · under ' + esc((goalById(t.goal) || {}).title || 'another goal') : ''}</div></div>
+      </label>`).join('')}</div>`,
+    onSubmit: (data) => {
+      pool.forEach((t) => {
+        const on = !!data['t_' + t.id];
+        if (on) t.goal = g.id;
+        else if (t.goal === g.id) t.goal = '';
+      });
+      saveRender('goals', 'tasks');
+    },
+  });
+}
+
+function goalCard(g) {
+  const p = goalProgress(g);
+  const linked = tasksForGoal(g.id);
+  const tone = g.done ? 'ok' : p.pct >= 60 ? 'ok' : p.pct >= 25 ? 'warn' : 'bad';
+  const overdue = g.due && !g.done && daysUntil(g.due) < 0;
+  return `<section class="goal" data-goal="${attr(g.id)}">
+    <div class="spread">
+      <div class="grow">
+        <div class="gtitle">${esc(g.title)}${g.done ? '<span class="pill ok">achieved</span>' : ''}${overdue ? `<span class="pill bad">${esc(relDays(g.due))}</span>` : ''}</div>
+        ${g.target ? `<div class="mini">done when: ${esc(g.target)}</div>` : ''}
+        ${g.why ? `<div class="mini mut">${esc(g.why)}</div>` : ''}
+      </div>
+      <div class="gpct num">${p.pct}%</div>
+    </div>
+    <div class="bar ${tone}" style="margin:9px 0 8px"><i style="width:${p.pct}%"></i></div>
+    <div class="kmeta">
+      <span class="pill">${esc((HORIZONS.find((h) => h[0] === g.horizon) || ['', 'quarter'])[1])}</span>
+      ${g.due ? `<span class="pill ${dueClass(g.due)}">${esc(fmtDay(g.due))}</span>` : ''}
+      ${p.total ? `<span class="pill">${p.done}/${p.total} tasks done</span>` : '<span class="pill warn">no tasks linked</span>'}
+    </div>
+    ${linked.length ? `<div class="list" style="margin-top:9px">${linked.map((t) => `
+      <div class="list-row click" data-open-task="${attr(t.id)}">
+        <div class="grow"><div class="t${t.status === 'done' ? ' done-text' : ''}">${esc(t.title)}</div>
+          <div class="m">${t.face === 'work' ? 'SATashkent' : 'CAU'} · ${esc(STATUSES.find((s) => s[0] === (t.status || 'todo'))[1])}</div></div>
+        ${t.due ? `<span class="pill ${dueClass(t.due)}">${esc(fmtDay(t.due))}</span>` : ''}</div>`).join('')}</div>` : ''}
+    <div class="wrap" style="margin-top:10px">
+      <button class="btn sm" data-link="${attr(g.id)}">Link tasks</button>
+      <button class="btn ghost sm" data-edit="${attr(g.id)}">Edit</button>
+    </div>
+  </section>`;
+}
+
+function renderGoals(view) {
+  const open = goalsOpen();
+  const done = goalItems().filter((g) => g.done);
+  const byHorizon = (h) => open.filter((g) => g.horizon === h);
+  const unlinked = DB.tasks.filter((t) => t.status !== 'done' && !t.goal).length;
+  const avg = open.length ? Math.round(mean(open.map((g) => goalProgress(g).pct))) : 0;
+
+  topbar('Goals', {
+    actions: `<button class="btn" id="review">Weekly review</button><button class="btn primary" id="newgoal">+ New goal</button>`,
+  });
+
+  view.innerHTML = `
+    <div class="stats">
+      ${statBox(open.length, 'goals in play', done.length ? `<div class="delta up">${done.length} achieved</div>` : '')}
+      ${statBox(`${avg}%`, 'average progress')}
+      ${statBox(DB.tasks.filter((t) => t.goal && t.status !== 'done').length, 'open tasks on goals',
+        unlinked ? `<div class="delta flat">${unlinked} unattached</div>` : '')}
+      ${statBox((DB.goals.reviews || []).length, 'weekly reviews logged')}
+    </div>
+
+    ${open.length ? HORIZONS.map(([h, label]) => {
+      const list = byHorizon(h);
+      if (!list.length) return '';
+      const r = horizonRange(h);
+      return panel(`${label} · ${r.label}`, `<div class="goals">${list.map(goalCard).join('')}</div>`, {
+        sub: `${daysBetween(new Date(), r.end)} days left in the window`,
+      });
+    }).join('') : emptyState('No goals yet', 'Name what this year and this quarter are actually for — then hang tasks off them.', actBtn('Add a goal', 'newgoal'))}
+
+    ${unlinked && open.length ? panel('Not serving anything', `<p class="mini" style="margin:0 0 8px">${unlinked} open task${unlinked === 1 ? '' : 's'} sit outside every goal. That is fine for errands — worth a look for anything bigger.</p>
+      <div class="list">${DB.tasks.filter((t) => t.status !== 'done' && !t.goal).slice(0, 10).map((t) => `
+        <div class="list-row click" data-open-task="${attr(t.id)}">
+          <div class="grow"><div class="t">${esc(t.title)}</div><div class="m">${t.face === 'work' ? 'SATashkent' : 'CAU'}</div></div>
+          ${t.due ? `<span class="pill ${dueClass(t.due)}">${esc(fmtDay(t.due))}</span>` : ''}</div>`).join('')}</div>`) : ''}
+
+    ${done.length ? panel(`Achieved · ${done.length}`, `<div class="goals">${done.map(goalCard).join('')}</div>`) : ''}
+
+    ${(DB.goals.reviews || []).length ? panel('Past reviews', `<div class="list">${[...DB.goals.reviews].reverse().slice(0, 12).map((rv) => `
+      <div class="list-row${rv.noteId ? ' click' : ''}"${rv.noteId ? ` data-goto="shared/notes/${attr(rv.noteId)}"` : ''}>
+        <div class="grow"><div class="t">Week of ${esc(fmtDate(rv.week))}</div>
+          <div class="m">${rv.closed} closed · ${rv.slipped} slipped · ${rv.habitPct}% habits kept</div></div>
+        ${rv.noteId ? '<span class="pill">note ↗</span>' : ''}</div>`).join('')}</div>`, { flush: true }) : ''}`;
+
+  $('#newgoal').addEventListener('click', () => goalDialog(null));
+  $('#review').addEventListener('click', () => reviewDialog());
+  on('[data-act=newgoal]', 'click', () => goalDialog(null), view);
+  on('[data-link]', 'click', (e, el) => { const g = goalById(el.dataset.link); if (g) linkTasksDialog(g); }, view);
+  on('[data-edit]', 'click', (e, el) => { const g = goalById(el.dataset.edit); if (g) goalDialog(g); }, view);
+  on('[data-open-task]', 'click', (e, el) => { const t = taskById(el.dataset.openTask); if (t) taskDialog(t, t.face); }, view);
+  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
+}
+PAGES['shared/goals'] = renderGoals;
+
+/* ---- the weekly review ---- */
+
+/** Everything the week actually did, gathered before you write a word about it. */
+function weekFacts(anchor = todayISO()) {
+  const days = weekDays(anchor);
+  const from = days[0], to = days[6];
+  const inWeek = (iso) => iso && iso >= from && iso <= to;
+
+  const closed = DB.tasks.filter((t) => t.status === 'done'
+    && ((t.history || []).some((h) => inWeek(h.done)) || inWeek(t.due)));
+  const rolled = DB.tasks.filter((t) => (t.history || []).some((h) => inWeek(h.done)));
+  const slipped = DB.tasks.filter((t) => t.status !== 'done' && t.due && t.due < todayISO() && inWeek(t.due));
+  const ahead = [...deadlineRows('work'), ...deadlineRows('uni')]
+    .filter((d) => { const n = daysUntil(d.due); return n >= 0 && n <= 7; });
+
+  const live = habitItems();
+  const habitRows = live.map((h) => {
+    const hit = days.filter((d) => d <= todayISO() && isTicked(h.id, d)).length;
+    const expected = h.cadence === 'weekly' ? (Number(h.target) || 1)
+      : days.filter((d) => d <= todayISO() && (!h.created || d >= h.created)).length;
+    return { h, hit, expected, pct: expected ? clamp(pct(hit, expected), 0, 100) : null };
+  });
+  const rated = habitRows.filter((r) => r.pct != null);
+  const habitPct = rated.length ? Math.round(mean(rated.map((r) => r.pct))) : 0;
+
+  const oneOnOnes = DB.teachers.flatMap((t) => (t.entries || [])
+    .filter((e) => inWeek(e.date)).map((e) => ({ t, e })));
+  const spend = (ensureFinances().tx || []).filter((x) => inWeek(x.date) && x.kind !== 'transfer' && inUZS(x) < 0);
+  const notes = DB.notes.filter((n) => inWeek(String(n.updated || '').slice(0, 10)));
+
+  return { from, to, closed, rolled, slipped, ahead, habitRows, habitPct, oneOnOnes,
+    spent: Math.abs(sum(spend.map(inUZS))), notes, goals: goalsOpen() };
+}
+
+function reviewDialog() {
+  const f = weekFacts();
+  const prev = (DB.goals.reviews || []).slice(-1)[0];
+  openDialog({
+    title: `Weekly review · ${fmtDate(f.from)} → ${fmtDate(f.to)}`,
+    submitLabel: 'File the review',
+    wide: true,
+    body: `
+      <div class="stats" style="margin-bottom:12px">
+        ${statBox(f.closed.length, 'closed', prev ? deltaHTML(f.closed.length, prev.closed, { p: 0 }) : '')}
+        ${statBox(f.slipped.length, 'slipped', prev ? deltaHTML(f.slipped.length, prev.slipped, { p: 0, lowerIsBetter: true }) : '')}
+        ${statBox(`${f.habitPct}%`, 'habits kept', prev ? deltaHTML(f.habitPct, prev.habitPct, { p: 0, unit: '%' }) : '')}
+        ${statBox(f.oneOnOnes.length, '1-1 entries')}
+      </div>
+      ${f.closed.length ? `<p class="mini b">CLOSED</p><div class="list" style="margin-bottom:10px">${f.closed.slice(0, 12).map((t) => `
+        <div class="list-row"><div class="grow"><div class="t">${esc(t.title)}</div>
+          <div class="m">${t.face === 'work' ? 'SATashkent' : 'CAU'}${repeatOf(t) ? ' · ' + esc(repeatLabel(t)) : ''}</div></div></div>`).join('')}</div>` : ''}
+      ${f.slipped.length ? `<p class="mini b">SLIPPED PAST ITS DATE</p><div class="list" style="margin-bottom:10px">${f.slipped.map((t) => `
+        <div class="list-row"><div class="grow"><div class="t">${esc(t.title)}</div><div class="m">${esc(relDays(t.due))}</div></div></div>`).join('')}</div>` : ''}
+      ${f.habitRows.length ? `<p class="mini b">HABITS</p><div class="list" style="margin-bottom:10px">${f.habitRows.map((r) => `
+        <div class="list-row"><div class="grow"><div class="t">${esc(r.h.name)}</div>
+          <div class="m">${r.hit}/${r.expected}${r.pct == null ? '' : ` · ${r.pct}%`}</div></div>
+          <div style="flex:0 0 110px"><div class="bar ${r.pct >= 80 ? 'ok' : r.pct >= 50 ? 'warn' : 'bad'}"><i style="width:${r.pct || 0}%"></i></div></div></div>`).join('')}</div>` : ''}
+      <label class="f"><span>What went well</span><textarea name="good" rows="3" placeholder="The week's honest wins"></textarea></label>
+      <label class="f"><span>What did not</span><textarea name="bad" rows="3"></textarea></label>
+      <label class="f"><span>One thing to change next week</span><input name="change" placeholder="Just one — it is the only kind that sticks"></label>
+      <label class="f"><span><input type="checkbox" name="note" checked> Also file this as a note in the vault</span></label>
+      <p class="mini">${f.ahead.length} deadline${f.ahead.length === 1 ? '' : 's'} in the next seven days${f.spent ? ` · ${esc(money(f.spent, 'UZS'))} spent this week` : ''}.</p>`,
+    onSubmit: (data) => {
+      const rv = {
+        id: uid(), week: f.from, filed: todayISO(),
+        closed: f.closed.length, slipped: f.slipped.length, habitPct: f.habitPct,
+        good: (data.good || '').trim(), bad: (data.bad || '').trim(), change: (data.change || '').trim(),
+        noteId: '',
+      };
+      if (data.note) {
+        const body = reviewMarkdown(f, rv);
+        const n = createNote({ title: `Weekly review ${f.from}`, path: 'Reviews', body });
+        rv.noteId = n.id;
+      }
+      DB.goals.reviews = [...(DB.goals.reviews || []), rv];
+      saveRender('goals');
+      toast(rv.noteId ? 'Review filed, note written' : 'Review filed');
+    },
+  });
+}
+
+function reviewMarkdown(f, rv) {
+  const line = (s) => (s ? s + '\n\n' : '');
+  return `# Weekly review · ${f.from} → ${f.to}
+
+**${f.closed.length} closed · ${f.slipped.length} slipped · ${f.habitPct}% habits kept · ${f.oneOnOnes.length} 1-1 entries**
+
+## What went well
+${line(rv.good) || '_nothing written_\n\n'}## What did not
+${line(rv.bad) || '_nothing written_\n\n'}## One change next week
+${line(rv.change) || '_nothing written_\n\n'}## Closed
+${f.closed.length ? f.closed.map((t) => `- ${t.title}`).join('\n') : '_nothing_'}
+
+## Slipped
+${f.slipped.length ? f.slipped.map((t) => `- ${t.title} (${relDays(t.due)})`).join('\n') : '_nothing_'}
+
+## Habits
+${f.habitRows.length ? f.habitRows.map((r) => `- ${r.h.name} — ${r.hit}/${r.expected}`).join('\n') : '_none tracked_'}
+
+## Goals in play
+${f.goals.length ? f.goals.map((g) => `- ${g.title} — ${goalProgress(g).pct}%`).join('\n') : '_none_'}
+
+## Next seven days
+${f.ahead.length ? f.ahead.map((d) => `- ${d.due} · ${d.label}`).join('\n') : '_clear_'}
+`;
+}
+
 /* ------------------------------------------------------------------- init */
 window.addEventListener('DOMContentLoaded', boot);
 let resizeTimer;
@@ -4536,6 +4826,11 @@ function paletteItems() {
   add('action', 'New task · university', 'Kanban card on the CAU face', () => taskDialog(null, 'uni'), 5);
   add('action', 'Quick note', 'One textarea, files into the vault', quickNoteDialog, 5);
   add('action', 'Add transaction', 'Money in or out', () => { go('shared/finances'); setTimeout(() => txDialog(null), 60); }, 5);
+  add('action', 'Tick a habit', 'Today\u2019s baseline', () => go('shared/today'), 5);
+  add('action', 'New habit', 'Something to do without deciding', () => habitDialog(null), 4);
+  add('action', 'New goal', 'Year, quarter or month', () => goalDialog(null), 4);
+  add('action', 'Weekly review', 'What closed, what slipped, what next', () => { go('shared/goals'); setTimeout(reviewDialog, 60); }, 4);
+  add('action', 'Daily note', 'Today\u2019s page in the vault', openDailyNote, 4);
   add('action', 'Log a 1-1', 'Open a teacher journal', () => go('work/teachers'), 4);
   add('action', 'Upload a CSV', 'Exam export or the quality survey', () => go('work/reports'), 4);
 
@@ -4549,6 +4844,8 @@ function paletteItems() {
   DB.teachers.forEach((t) => add('teacher', t.name, t.left ? 'former teacher' : (t.teaches || 'teacher'), () => go(`work/teachers/${t.id}`), 2));
   DB.tasks.filter((t) => t.status !== 'done').forEach((t) =>
     add('task', t.title, `${t.face === 'work' ? 'work' : 'CAU'} task${t.due ? ' · ' + relDays(t.due) : ''}`, () => taskDialog(t, t.face), 2));
+  goalItems().forEach((g) => add('goal', g.title, `${g.horizon} goal · ${goalProgress(g).pct}%`, () => { go('shared/goals'); setTimeout(() => goalDialog(g), 60); }, 2));
+  habitItems().forEach((h) => add('habit', h.name, h.cadence === 'weekly' ? `${Number(h.target) || 1}× a week` : 'daily habit', () => go('shared/habits'), 2));
   (DB.uni.courses || []).forEach((c) => add('course', c.name, c.code || 'course', () => go(`uni/courses/${c.id}`), 2));
   DB.notes.forEach((n) => add('note', n.title, n.path || 'vault root', () => go(`shared/notes/${n.id}`), 1));
   DB.datasets.forEach((d) => add('report', d.name, `${d.kind} · ${d.rows.length} rows`, () => go(`work/reports/${d.id}`), 1));
@@ -4572,7 +4869,7 @@ function fuzzyScore(needle, hay) {
   return i === n.length ? score * 0.4 : -1;
 }
 
-const KIND_ICON = { action: '⌁', page: '◇', teacher: '☺', task: '▤', course: '❐', note: '✦', report: '▦' };
+const KIND_ICON = { action: '⌁', page: '◇', teacher: '☺', task: '▤', course: '❐', note: '✦', report: '▦', goal: '◎', habit: '✓' };
 
 let paletteOpen = false;
 function openPalette(prefill = '') {
