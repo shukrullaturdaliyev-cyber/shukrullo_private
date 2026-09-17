@@ -4,7 +4,8 @@ A private, single-user operations dashboard with two faces and a set of shared m
 
 * **Work** — head of the English department at an SAT-prep school: overview, teacher 1-1 journals, tasks, CSV report engines.
 * **University** (Central Asian University) — overview, timetable, courses, tasks, lecture notes (*Konspekty*).
-* **Everywhere** — a native calendar with two-way Google sync, an Obsidian-style note vault, finances, settings.
+* **Everywhere** — a Today page across both faces, a native calendar with two-way Google sync, habits, goals and the
+  weekly review, an Obsidian-style note vault, a health log, finances, settings.
 
 One user, one passphrase. The app itself is static; data lives in a Cloudflare KV namespace and is
 mirrored into `localStorage` so nothing is ever lost when the network is not there.
@@ -115,8 +116,8 @@ temporarily if you want to seed the live desk, then delete it.
 
 ### Storage
 
-Seven KV keys hold the collections: `settings`, `notes` (the index only), `teachers`, `tasks`, `uni`,
-`finances`, `datasets`. Each note **body** lives in its own key `n_<id>` (`{"t": "…"}`) so a large vault
+Ten KV keys hold the collections: `settings`, `notes` (the index only), `teachers`, `tasks`, `uni`,
+`finances`, `datasets`, `habits`, `goals`, `health`. Each note **body** lives in its own key `n_<id>` (`{"t": "…"}`) so a large vault
 never runs into a value-size limit; bodies load lazily, are cached in memory and saved debounced.
 
 Every save writes `localStorage` immediately and schedules a `PUT`. If the `PUT` fails the sync pill
@@ -154,6 +155,41 @@ the exam engine attributes through) and their joined/left dates. Setting **Left 
 collapsed *Former teachers* list — history kept, excluded from the overview. A scorecard pulled from the
 uploaded datasets loads on the profile.
 
+### Today, habits and repeats
+
+**Today** is the front door and the only page that spans both faces: what is overdue or due today, habits
+with one-tap ticks, the day's classes, what you owe teachers, and the rest of the week. *Daily note* opens
+(or creates) `Journal/YYYY-MM-DD` in the vault.
+
+**Habits** are either daily or *N days a week*; the weekly kind stops asking once the number is met. Ticks
+are stored as one id list per date, so the blob stays small. Streaks count days for daily habits and whole
+weeks for weekly ones, and an unticked today counts as still open rather than already broken. The page has
+a Mon–Sun strip you can tick straight into, a 30-day keep rate, and a square per day over twelve weeks.
+
+**Repeating tasks** carry a rule of every *N* days, weeks or months. Finishing one rolls it forward instead
+of leaving a dead card: the run is filed in `history`, steps come back undone and keep their distance from
+the deadline, and the next date is stepped until it is genuinely ahead, so finishing late never queues up
+dates already gone. Monthly repeats keep a day-of-month anchor, so the 31st runs Jan 31 → Feb 28 → Mar 31
+rather than sticking to the 28th.
+
+### Goals and the weekly review
+
+Goals sit on three horizons — year, quarter, month — and each knows the window it covers, so "this quarter"
+still means something in December. Link tasks to a goal and its bar is the average of their progress, with a
+finished task counting as whole; only a goal with nothing linked falls back to its own slider. Tasks attach
+from either side, and the page lists open tasks serving no goal at all.
+
+The **weekly review** gathers the week before asking anything — what closed (repeat runs included), what
+slipped past its date, how each habit did against what it owed, 1-1 entries, money spent, deadlines in the
+next seven days — then asks three questions and files itself, optionally as a dated note in `Reviews/`.
+
+### Health
+
+One row a calendar day, every field optional, and a day with nothing in it is not kept. Sleep is entered as
+lights-out and waking rather than a number of hours, so 23:40 → 06:15 reads as 6h 35m instead of going
+negative across midnight; nights under six hours are marked short. Charts for hours a night over 30 days and
+weight over the last 90 readings. Logging a day that already exists fills its gaps rather than replacing it.
+
 ### The vault
 
 Folder tree with persisted collapse state, search across title/path/tags, a Move dialog with folder
@@ -165,6 +201,16 @@ folder. The writer is a centred 68ch column with fading controls, a Write/Read t
 (including `compressed-json` via lz-string) and updates in place by path + title — it never deletes.
 Notes of kind `excalidraw` open the real Excalidraw editor, autosaving standard `.excalidraw` JSON into
 the note body.
+
+### Money that moved instead of being spent
+
+Savings goals are pots with a target. Link the account the money actually sits in and the bar follows its
+balance; otherwise keep the figure by hand.
+
+The nudge matters more: an expense whose category or note reads like a move rather than a purchase —
+*savings*, *avans*, *deposit*, *transfer*, *withdrawal*, or the name of one of your own accounts — is listed
+under **Moved, or spent?** with the total it is adding to the month. One button files it as a real transfer,
+so the money stays on the books, leaves the spending total, and lands where a savings goal can see it.
 
 ### Calendar
 

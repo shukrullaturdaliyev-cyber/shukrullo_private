@@ -4257,6 +4257,9 @@ function renderSettings(view) {
         <div class="list-row"><div class="grow">Tasks</div><span class="num">${DB.tasks.length}</span></div>
         <div class="list-row"><div class="grow">Datasets</div><span class="num">${DB.datasets.length}</span></div>
         <div class="list-row"><div class="grow">Transactions</div><span class="num">${(DB.finances.tx || []).length}</span></div>
+        <div class="list-row"><div class="grow">Habits</div><span class="num">${habitItems(true).length}${Object.keys(DB.habits.ticks || {}).length ? ` <span class="mut">· ${Object.keys(DB.habits.ticks).length} days ticked</span>` : ''}</span></div>
+        <div class="list-row"><div class="grow">Goals</div><span class="num">${goalItems().length}${(DB.goals.reviews || []).length ? ` <span class="mut">· ${DB.goals.reviews.length} reviews</span>` : ''}</span></div>
+        <div class="list-row"><div class="grow">Health days</div><span class="num">${(DB.health.days || []).length}</span></div>
         <div class="list-row"><div class="grow">Local cache</div><span class="num">${Math.round(bytes / 1024)} KB</span></div>
       </div>`, { flush: true })}
 
