@@ -243,7 +243,7 @@ function download(filename, text, mime = 'application/json') {
 
 /* --------------------------------------------------- 2. storage + sync layer */
 
-const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets'];
+const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets', 'habits', 'goals', 'health'];
 const LS = 'desk:';
 const PASS_KEY = 'desk:pass';
 
@@ -264,8 +264,11 @@ const DEFAULTS = () => ({
   teachers: [],
   tasks: [],
   uni: { courses: [], slots: [] },
-  finances: { tx: [], budgets: {} },
+  finances: { tx: [], budgets: {}, goals: [] },
   datasets: [],
+  habits: { items: [], ticks: {} },
+  goals: { items: [], reviews: [] },
+  health: { days: [] },
 });
 
 let DB = DEFAULTS();
@@ -360,7 +363,16 @@ async function loadAll() {
   if (!Array.isArray(DB.tasks)) DB.tasks = [];
   if (!Array.isArray(DB.datasets)) DB.datasets = [];
   DB.uni = Object.assign({ courses: [], slots: [] }, DB.uni || {});
-  DB.finances = Object.assign({ tx: [], budgets: {}, accounts: [] }, DB.finances || {});
+  DB.finances = Object.assign({ tx: [], budgets: {}, accounts: [], goals: [] }, DB.finances || {});
+  DB.habits = Object.assign({ items: [], ticks: {} }, DB.habits || {});
+  if (!Array.isArray(DB.habits.items)) DB.habits.items = [];
+  if (!DB.habits.ticks || Array.isArray(DB.habits.ticks)) DB.habits.ticks = {};
+  DB.goals = Object.assign({ items: [], reviews: [] }, DB.goals || {});
+  if (!Array.isArray(DB.goals.items)) DB.goals.items = [];
+  if (!Array.isArray(DB.goals.reviews)) DB.goals.reviews = [];
+  DB.health = Object.assign({ days: [] }, DB.health || {});
+  if (!Array.isArray(DB.health.days)) DB.health.days = [];
+  if (!Array.isArray(DB.finances.goals)) DB.finances.goals = [];
   ensureFinances();
   setSync(REMOTE ? 'cloud' : 'local');
 }
@@ -558,8 +570,12 @@ const NAV = {
     { id: 'konspekty', label: 'Konspekty', ico: '✎' },
   ],
   shared: [
+    { id: 'today', label: 'Today', ico: '◈' },
     { id: 'calendar', label: 'Calendar', ico: '▣' },
+    { id: 'habits', label: 'Habits', ico: '✓' },
+    { id: 'goals', label: 'Goals', ico: '◎' },
     { id: 'notes', label: 'Notes', ico: '✦' },
+    { id: 'health', label: 'Health', ico: '♡' },
     { id: 'finances', label: 'Finances', ico: '₮' },
     { id: 'settings', label: 'Settings', ico: '⚙' },
   ],
@@ -571,7 +587,7 @@ function route() {
   let [face, page, param] = parts;
   if (!['work', 'uni', 'shared'].includes(face)) face = DB.settings.lastFace === 'uni' ? 'uni' : 'work';
   const pages = face === 'shared' ? NAV.shared : NAV[face];
-  if (!pages.some((p) => p.id === page)) page = face === 'shared' ? 'calendar' : 'overview';
+  if (!pages.some((p) => p.id === page)) page = face === 'shared' ? 'today' : 'overview';
   return { face, page, param: param || '', rest: parts.slice(3) };
 }
 const currentFace = () => {
@@ -720,6 +736,64 @@ function deadlineRows(face) {
   return rows.sort((a, b) => a.due.localeCompare(b.due));
 }
 
+/* ---- repeating tasks ---- */
+
+const REPEATS = [['', 'Does not repeat'], ['day', 'Every day'], ['week', 'Every week'], ['month', 'Every month']];
+const repeatOf = (t) => (t && t.repeat && t.repeat.every ? t.repeat : null);
+
+function repeatLabel(t) {
+  const r = repeatOf(t);
+  if (!r) return '';
+  const n = Math.max(1, Number(r.interval) || 1);
+  const unit = n === 1 ? r.every : `${n} ${r.every}s`;
+  return `every ${unit}`;
+}
+
+/** The date a repeating task lands on next, counted from its own due date. */
+function nextDue(t, from) {
+  const r = repeatOf(t);
+  if (!r) return '';
+  const n = Math.max(1, Number(r.interval) || 1);
+  const base = fromISO(from || t.due) || startOfDay(new Date());
+  const today = startOfDay(new Date());
+  // Monthly repeats count from a fixed day of the month. Without that anchor a
+  // task due the 31st clamps to Feb 28 and then stays on the 28th for ever.
+  const anchor = clamp(Number(r.dom) || base.getDate(), 1, 31);
+  // Step whole periods until the occurrence is genuinely ahead, so finishing
+  // late does not queue up a pile of dates already gone.
+  for (let k = 1; k < 400; k++) {
+    const d = r.every === 'month'
+      ? monthOn(base, n * k, anchor)
+      : addDays(base, (r.every === 'week' ? 7 : 1) * n * k);
+    if (startOfDay(d) > today) return toISO(d);
+  }
+  return toISO(base);
+}
+/** `months` on from base, landing on `anchor` or the last day of a shorter month. */
+function monthOn(base, months, anchor) {
+  const x = new Date(base.getFullYear(), base.getMonth() + months, 1);
+  x.setDate(Math.min(anchor, new Date(x.getFullYear(), x.getMonth() + 1, 0).getDate()));
+  return x;
+}
+
+/** Completing a repeating task rolls it forward and files the finished run in its history. */
+function rollRepeat(t) {
+  const r = repeatOf(t);
+  if (!r) return false;
+  const was = t.due || todayISO();
+  t.history = [...(t.history || []), { done: todayISO(), due: was }].slice(-60);
+  t.due = nextDue(t, was);
+  t.status = 'todo';
+  t.progress = 0;
+  t.steps = (t.steps || []).map((s) => ({ ...s, done: false, due: s.due && was ? shiftBy(s.due, was, t.due) : s.due }));
+  return true;
+}
+/** Keep a step the same distance from the deadline as it was last time round. */
+function shiftBy(stepDue, oldDue, newDue) {
+  const gap = daysBetween(fromISO(oldDue), fromISO(stepDue));
+  return toISO(addDays(fromISO(newDue), gap));
+}
+
 function taskDialog(existing, face, presetCourse) {
   const t = existing || { id: uid(), face, title: '', due: '', link: '', notes: '', course: presetCourse || '', status: 'todo', progress: 0, steps: [] };
   const steps = (t.steps || []).map((s) => ({ ...s }));
@@ -740,6 +814,13 @@ function taskDialog(existing, face, presetCourse) {
     </div>
     ${face === 'uni' ? `<label class="f"><span>Course</span><select name="course"><option value="">— none —</option>
       ${courses.map((c) => `<option value="${attr(c.id)}"${t.course === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}
+    <div class="row">
+      <label class="f"><span>Repeats</span><select name="rev">
+        ${REPEATS.map(([v, l]) => `<option value="${v}"${(t.repeat && t.repeat.every || '') === v ? ' selected' : ''}>${l}</option>`).join('')}
+      </select></label>
+      <label class="f" id="riwrap"><span>Every how many</span>
+        <input name="rint" type="number" min="1" max="52" value="${attr((t.repeat && t.repeat.interval) || 1)}"></label>
+    </div>
     <label class="f"><span>Link</span><input name="link" value="${attr(t.link || '')}" placeholder="https://…"></label>
     <label class="f"><span>Notes</span><textarea name="notes" rows="3">${esc(t.notes || '')}</textarea></label>
     <div class="spread" style="margin:14px 0 6px"><span class="mini b">STEPS</span><button type="button" class="btn sm" id="addstep">+ Step</button></div>
@@ -752,6 +833,8 @@ function taskDialog(existing, face, presetCourse) {
     body,
     extraFooter: existing ? `<button type="button" class="btn danger left" id="deltask">Delete</button>` : '',
     onOpen: (dlg, close) => {
+      const rsync = () => { $('#riwrap', dlg).style.display = $('[name=rev]', dlg).value ? '' : 'none'; };
+      $('[name=rev]', dlg).addEventListener('change', rsync); rsync();
       const list = $('#steplist', dlg);
       const redraw = () => { list.innerHTML = stepsHTML(); };
       $('#addstep', dlg).addEventListener('click', () => { steps.push({ id: uid(), text: '', due: '', done: false }); redraw(); const inputs = $$('[data-stext]', list); if (inputs.length) inputs[inputs.length - 1].focus(); });
@@ -781,8 +864,14 @@ function taskDialog(existing, face, presetCourse) {
         title, due: data.due || '', link: data.link.trim(), notes: data.notes,
         course: data.course || '', status: data.status, progress: Number(data.progress) || 0,
         steps: steps.filter((s) => s.text.trim()).map((s) => ({ ...s, text: s.text.trim() })),
+        repeat: data.rev ? {
+          every: data.rev, interval: clamp(Number(data.rint) || 1, 1, 52),
+          dom: data.rev === 'month' ? ((fromISO(data.due) || new Date()).getDate()) : 0,
+        } : null,
         face,
       });
+      // ticking a repeating task closed in the dialog rolls it forward too
+      if (t.status === 'done' && rollRepeat(t)) toast(`Repeats — next one ${fmtDay(t.due).toLowerCase()}`);
       if (!existing) DB.tasks.push(t);
       saveRender('tasks');
     },
@@ -800,6 +889,7 @@ function taskCard(t) {
     <div class="kmeta">
       ${due}
       ${p.total ? `<span class="pill">${p.done}/${p.total} steps</span>` : ''}
+      ${repeatOf(t) ? `<span class="pill">↻ ${esc(repeatLabel(t))}</span>` : ''}
       ${course ? `<span class="pill accent">${esc(course)}</span>` : ''}
       ${t.link ? `<a class="pill" href="${attr(t.link)}" target="_blank" rel="noopener" data-stop>link ↗</a>` : ''}
     </div>
@@ -840,6 +930,7 @@ function renderTasks(view, r) {
       const order = STATUSES.map((s) => s[0]);
       const i = clamp(order.indexOf(t.status || 'todo') + Number(move.dataset.move), 0, 2);
       t.status = order[i];
+      if (t.status === 'done' && rollRepeat(t)) toast(`Done — back ${fmtDay(t.due).toLowerCase()}`);
       saveRender('tasks');
       return;
     }
@@ -4063,6 +4154,364 @@ function renderSettings(view) {
   });
 }
 PAGES['shared/settings'] = renderSettings;
+
+/* ------------------------------------------------- 9a. habits: the daily baseline */
+
+/** Cadence: 'daily' means every day; 'weekly' means `target` days out of any Mon–Sun week. */
+const HABIT_CADENCES = [['daily', 'Every day'], ['weekly', 'Some days a week']];
+
+const habitItems = (all = false) => (DB.habits.items || []).filter((h) => all || !h.archived);
+const habitById = (id) => (DB.habits.items || []).find((h) => h.id === id);
+const ticksOn = (iso) => (DB.habits.ticks || {})[iso] || [];
+const isTicked = (id, iso) => ticksOn(iso).includes(id);
+
+/** Habits are ticked per day, so the store is one id-list per date — small and diffable. */
+function toggleTick(id, iso) {
+  const t = DB.habits.ticks || (DB.habits.ticks = {});
+  const list = t[iso] ? [...t[iso]] : [];
+  const i = list.indexOf(id);
+  if (i < 0) list.push(id); else list.splice(i, 1);
+  if (list.length) t[iso] = list; else delete t[iso];   // never keep empty days around
+  save('habits');
+}
+
+/** Monday of the week `iso` falls in. */
+function weekStart(d) {
+  const x = startOfDay(d instanceof Date ? d : fromISO(d) || new Date());
+  return addDays(x, -((x.getDay() + 6) % 7));
+}
+const weekDays = (anchor) => {
+  const m = weekStart(anchor);
+  return Array.from({ length: 7 }, (_, i) => toISO(addDays(m, i)));
+};
+
+/** Is this habit owed today? A weekly habit stops asking once its target is met. */
+function habitOwed(h, iso = todayISO()) {
+  if (h.archived) return false;
+  if (isTicked(h.id, iso)) return false;
+  if (h.cadence !== 'weekly') return true;
+  const done = weekDays(iso).filter((d) => d <= iso && isTicked(h.id, d)).length;
+  return done < (Number(h.target) || 1);
+}
+
+function weekCount(h, iso = todayISO()) {
+  return weekDays(iso).filter((d) => isTicked(h.id, d)).length;
+}
+
+/** Consecutive satisfied periods up to today — days for daily, weeks for weekly. */
+function streak(h, iso = todayISO()) {
+  if (h.cadence === 'weekly') {
+    const target = Number(h.target) || 1;
+    let n = 0;
+    for (let w = 0; w < 260; w++) {
+      const anchor = toISO(addDays(weekStart(iso), -7 * w));
+      const days = weekDays(anchor);
+      const hit = days.filter((d) => isTicked(h.id, d)).length;
+      if (hit >= target) { n++; continue; }
+      // the current week is still in progress — not yet a broken streak
+      if (w === 0) continue;
+      break;
+    }
+    return n;
+  }
+  let n = 0;
+  for (let i = 0; i < 3650; i++) {
+    const d = toISO(addDays(fromISO(iso), -i));
+    if (isTicked(h.id, d)) { n++; continue; }
+    if (i === 0) continue;   // today not ticked yet: yesterday's streak still stands
+    break;
+  }
+  return n;
+}
+
+function bestStreak(h) {
+  const days = Object.keys(DB.habits.ticks || {}).filter((d) => isTicked(h.id, d)).sort();
+  if (!days.length) return 0;
+  if (h.cadence === 'weekly') {
+    const target = Number(h.target) || 1;
+    const weeks = {};
+    days.forEach((d) => { const k = toISO(weekStart(d)); weeks[k] = (weeks[k] || 0) + 1; });
+    const hit = Object.keys(weeks).filter((k) => weeks[k] >= target).sort();
+    let best = 0, run = 0, prev = null;
+    hit.forEach((k) => {
+      run = prev && daysBetween(fromISO(prev), fromISO(k)) === 7 ? run + 1 : 1;
+      best = Math.max(best, run); prev = k;
+    });
+    return best;
+  }
+  let best = 0, run = 0, prev = null;
+  days.forEach((d) => {
+    run = prev && daysBetween(fromISO(prev), fromISO(d)) === 1 ? run + 1 : 1;
+    best = Math.max(best, run); prev = d;
+  });
+  return best;
+}
+
+/** Share of expected ticks actually made over the last `span` days. */
+function habitRate(h, span = 30) {
+  const today = startOfDay(new Date());
+  const from = addDays(today, -(span - 1));
+  const days = Array.from({ length: span }, (_, i) => toISO(addDays(from, i)))
+    .filter((d) => !h.created || d >= h.created);
+  if (!days.length) return null;
+  const done = days.filter((d) => isTicked(h.id, d)).length;
+  const expected = h.cadence === 'weekly'
+    ? Math.max(1, Math.round((days.length / 7) * (Number(h.target) || 1)))
+    : days.length;
+  return clamp(pct(done, expected), 0, 100);
+}
+
+function habitDialog(existing) {
+  const h = existing || { id: uid(), name: '', cadence: 'daily', target: 3, created: todayISO(), archived: false };
+  openDialog({
+    title: existing ? 'Edit habit' : 'New habit',
+    body: `
+      <label class="f"><span>Habit</span><input name="name" value="${attr(h.name)}" placeholder="Read 20 pages"></label>
+      <div class="row">
+        <label class="f"><span>How often</span><select name="cadence">
+          ${HABIT_CADENCES.map(([v, l]) => `<option value="${v}"${h.cadence === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+        <label class="f" id="twrap"><span>Days per week</span>
+          <input name="target" type="number" min="1" max="7" value="${attr(Number(h.target) || 3)}"></label>
+      </div>
+      ${existing ? `<label class="f"><span><input type="checkbox" name="archived"${h.archived ? ' checked' : ''}> Archived — keeps the history, stops asking</span></label>` : ''}
+      <p class="mini">A daily habit is owed every day. A weekly one stops asking once you hit the number.</p>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delhabit">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const sync = () => { $('#twrap', dlg).style.display = $('[name=cadence]', dlg).value === 'weekly' ? '' : 'none'; };
+      $('[name=cadence]', dlg).addEventListener('change', sync); sync();
+      const del = $('#delhabit', dlg);
+      if (del) del.addEventListener('click', () => {
+        confirmDialog('Delete habit', `“${h.name}” and every tick you have made for it will be removed. Archiving keeps the history instead.`, () => {
+          DB.habits.items = habitItems(true).filter((x) => x.id !== h.id);
+          Object.keys(DB.habits.ticks).forEach((d) => {
+            const left = DB.habits.ticks[d].filter((x) => x !== h.id);
+            if (left.length) DB.habits.ticks[d] = left; else delete DB.habits.ticks[d];
+          });
+          close(); saveRender('habits'); toast('Habit deleted');
+        });
+      });
+    },
+    onSubmit: (data) => {
+      const name = data.name.trim();
+      if (!name) { toast('A habit needs a name.', 'bad'); return false; }
+      Object.assign(h, {
+        name, cadence: data.cadence === 'weekly' ? 'weekly' : 'daily',
+        target: clamp(Number(data.target) || 3, 1, 7),
+        archived: !!data.archived,
+      });
+      if (!existing) DB.habits.items.push(h);
+      saveRender('habits');
+    },
+  });
+}
+
+/** The Mon–Sun strip: ticked, owed, missed or still to come. */
+function habitWeekCells(h, anchor = todayISO()) {
+  const today = todayISO();
+  return weekDays(anchor).map((d) => {
+    const on = isTicked(h.id, d);
+    const future = d > today;
+    const before = h.created && d < h.created;
+    const cls = on ? 'on' : future || before ? 'idle' : 'off';
+    const label = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][(fromISO(d).getDay() + 6) % 7];
+    return `<button class="hcell ${cls}${d === today ? ' today' : ''}" data-tick="${attr(h.id)}" data-date="${d}"
+      ${future || before ? ' disabled' : ''} title="${label} ${esc(fmtDate(d))}${on ? ' · done' : ''}">
+      <span class="hcell-d">${label[0]}</span><span class="hcell-m">${on ? '✓' : future || before ? '·' : '○'}</span></button>`;
+  }).join('');
+}
+
+function habitRow(h) {
+  const s = streak(h);
+  const rate = habitRate(h);
+  const owed = habitOwed(h);
+  const sub = h.cadence === 'weekly'
+    ? `${weekCount(h)}/${Number(h.target) || 1} this week`
+    : (s ? `${s}-day streak` : 'no streak yet');
+  return `<div class="hrow${h.archived ? ' archived' : ''}" data-habit="${attr(h.id)}">
+    <div class="hmain">
+      <div class="hname">${esc(h.name)}${owed ? '<span class="pill warn">owed</span>' : ''}${h.archived ? '<span class="pill">archived</span>' : ''}</div>
+      <div class="mini">${esc(sub)}${rate == null ? '' : ` · ${rate}% of the last 30 days`}${bestStreak(h) > s ? ` · best ${bestStreak(h)}` : ''}</div>
+    </div>
+    <div class="hweek">${habitWeekCells(h)}</div>
+    <button class="btn ghost sm hedit" data-edit="${attr(h.id)}" title="Edit">edit</button>
+  </div>`;
+}
+
+function renderHabits(view) {
+  const live = habitItems();
+  const archived = habitItems(true).filter((h) => h.archived);
+  const owed = live.filter((h) => habitOwed(h));
+  const todayDone = live.filter((h) => isTicked(h.id, todayISO())).length;
+
+  topbar('Habits', { actions: `<button class="btn primary" id="newhabit">+ New habit</button>` });
+
+  view.innerHTML = `
+    <div class="stats">
+      ${statBox(`${todayDone}/${live.length}`, 'done today', owed.length ? `<div class="delta flat">${owed.length} still owed</div>` : `<div class="delta up">all clear</div>`)}
+      ${statBox(live.length ? Math.max(...live.map((h) => streak(h))) : 0, 'longest live streak',
+        live.length ? `<div class="delta flat">${esc((live.slice().sort((a, b) => streak(b) - streak(a))[0] || {}).name || '')}</div>` : '')}
+      ${statBox(`${live.length ? Math.round(mean(live.map((h) => habitRate(h)).filter((v) => v != null)) || 0) : 0}%`, 'kept, last 30 days')}
+      ${statBox(Object.keys(DB.habits.ticks || {}).length, 'days on record')}
+    </div>
+
+    ${live.length ? panel('This week', `<div class="hlist">${live.map(habitRow).join('')}</div>`, {
+      sub: fmtDate(toISO(weekStart(new Date()))) + ' → ' + fmtDate(toISO(addDays(weekStart(new Date()), 6))),
+      flush: true,
+    }) : emptyState('No habits yet', 'Add the handful of things you want to do without deciding every time.', actBtn('Add a habit', 'newhabit'))}
+
+    ${live.length ? panel('Last 12 weeks', `<div class="hmap">${live.map((h) => `
+      <div class="hmap-row">
+        <div class="hmap-name trunc" title="${attr(h.name)}">${esc(h.name)}</div>
+        <div class="hmap-cells">${Array.from({ length: 84 }, (_, i) => {
+          const d = toISO(addDays(startOfDay(new Date()), -(83 - i)));
+          const on = isTicked(h.id, d);
+          const before = h.created && d < h.created;
+          return `<span class="hdot${on ? ' on' : before ? ' idle' : ''}" title="${esc(fmtDate(d))}${on ? ' · done' : ''}"></span>`;
+        }).join('')}</div>
+      </div>`).join('')}</div>`, { sub: 'one square a day, oldest on the left' }) : ''}
+
+    ${archived.length ? panel(`Archived · ${archived.length}`, `<div class="hlist">${archived.map(habitRow).join('')}</div>`, { flush: true }) : ''}`;
+
+  $('#newhabit').addEventListener('click', () => habitDialog(null));
+  on('[data-act=newhabit]', 'click', () => habitDialog(null), view);
+  on('[data-tick]', 'click', (e, el) => { toggleTick(el.dataset.tick, el.dataset.date); render(); }, view);
+  on('[data-edit]', 'click', (e, el) => { const h = habitById(el.dataset.edit); if (h) habitDialog(h); }, view);
+}
+PAGES['shared/habits'] = renderHabits;
+
+/* ------------------------------------------------- 9b. today: the front door */
+
+/** Is there a class today at all? Respects the semester window, like the calendar. */
+function classesToday(iso = todayISO()) {
+  const d = fromISO(iso);
+  const sem = semesterWindow();
+  if (sem.start && startOfDay(d) < startOfDay(sem.start)) return [];
+  if (sem.end && startOfDay(d) > startOfDay(sem.end)) return [];
+  return classesOn((d.getDay() + 6) % 7);
+}
+
+/** Today's daily note, by convention `Journal/YYYY-MM-DD`. */
+const DAILY_FOLDER = 'Journal';
+const dailyNoteTitle = (iso = todayISO()) => iso;
+function findDailyNote(iso = todayISO()) {
+  return DB.notes.find((n) => n.title === dailyNoteTitle(iso) && norm(n.path) === norm(DAILY_FOLDER));
+}
+function openDailyNote() {
+  const iso = todayISO();
+  const found = findDailyNote(iso);
+  if (found) { go(`shared/notes/${found.id}`); return; }
+  const d = fromISO(iso);
+  const body = `# ${d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}\n\n`;
+  const n = createNote({ title: dailyNoteTitle(iso), path: DAILY_FOLDER, body });
+  toast('Daily note created');
+  go(`shared/notes/${n.id}`);
+}
+
+function renderToday(view) {
+  const iso = todayISO();
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+
+  const classes = classesToday(iso);
+  const live = habitItems();
+  const owedHabits = live.filter((h) => habitOwed(h, iso));
+  const doneHabits = live.filter((h) => isTicked(h.id, iso));
+
+  const deadlines = [...deadlineRows('work').map((d) => ({ ...d, face: 'work' })),
+    ...deadlineRows('uni').map((d) => ({ ...d, face: 'uni' }))];
+  const overdue = deadlines.filter((d) => daysUntil(d.due) < 0);
+  const today = deadlines.filter((d) => daysUntil(d.due) === 0);
+  const soon = deadlines.filter((d) => { const n = daysUntil(d.due); return n > 0 && n <= 7; });
+
+  const owed = DB.teachers.filter((t) => !t.left).flatMap((t) => openTasks(t, 'task_me').map((e) => ({ t, e })));
+  const ne = nextExam();
+  const nextCls = classes.find((s) => toMin(s.start) > nowMin);
+  const running = classes.find((s) => toMin(s.start) <= nowMin && nowMin < toMin(s.end));
+
+  const lines = [];
+  if (overdue.length) lines.push({ kind: 'bad', html: `<b>${overdue.length}</b> overdue` });
+  if (today.length) lines.push({ kind: 'warn', html: `<b>${today.length}</b> due today` });
+  if (running) lines.push({ kind: '', html: `in <b>${esc(courseName(running.courseId) || 'class')}</b> until ${esc(running.end)}` });
+  else if (nextCls) lines.push({ kind: '', html: `${esc(courseName(nextCls.courseId) || 'Class')} at <b>${esc(nextCls.start)}</b>` });
+  if (owedHabits.length) lines.push({ kind: '', html: `<b>${owedHabits.length}</b> ${owedHabits.length === 1 ? 'habit' : 'habits'} owed` });
+  if (owed.length) lines.push({ kind: '', html: `<b>${owed.length}</b> you owe teachers` });
+  if (!lines.length) lines.push({ kind: 'good', html: 'Nothing owed, nothing overdue. Rare and good.' });
+
+  topbar(' ');
+  $('#topbar').innerHTML = '';
+
+  const dlRow = (d) => `<div class="list-row click" data-open-task="${attr(d.id)}" data-face="${attr(d.face)}">
+    <div class="grow"><div class="t">${esc(d.label)}</div>
+      <div class="m">${d.kind === 'step' ? 'step' : 'final deadline'} · ${d.face === 'work' ? 'SATashkent' : 'CAU'}</div></div>
+    <span class="pill ${dueClass(d.due)}">${esc(fmtDay(d.due))}</span></div>`;
+
+  view.innerHTML = `
+    ${hero(greeting(), now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }), lines,
+      `${actBtn('Daily note', 'daily')}${actBtn('Quick note', 'quicknote')}${actBtn('+ Task', 'newtask')}
+       <button class="btn sm ghost" data-act="palette" title="Ctrl+K">⌘K search</button>`)}
+
+    <div class="stats">
+      ${statBox(overdue.length + today.length, 'due now', soon.length ? `<div class="delta flat">${soon.length} this week</div>` : '')}
+      ${statBox(`${doneHabits.length}/${live.length}`, 'habits today',
+        owedHabits.length ? `<div class="delta flat">${owedHabits.length} owed</div>` : live.length ? `<div class="delta up">all done</div>` : '')}
+      ${statBox(classes.length, 'classes today', nextCls ? `<div class="delta flat">next ${esc(nextCls.start)}</div>` : '')}
+      ${statBox(ne ? daysUntil(ne.date) : '—', 'days to next exam', ne ? `<div class="delta flat">${esc(ne.course)}</div>` : '')}
+    </div>
+
+    <div class="grid g-side">
+      ${panel('Owed today', (overdue.length || today.length)
+        ? `<div class="list">${[...overdue, ...today].map(dlRow).join('')}</div>`
+        : emptyState('Nothing due today', 'Overdue work and today’s deadlines land here first.', actBtn('Add a task', 'newtask')), { flush: true })}
+
+      ${panel('Habits', live.length ? `<div class="hlist">${live.map((h) => {
+        const on = isTicked(h.id, iso);
+        return `<div class="hrow">
+          <button class="btn ${on ? 'primary' : ''} sm" data-tick="${attr(h.id)}" data-date="${iso}" style="flex:0 0 auto">${on ? '✓' : '○'}</button>
+          <div class="hmain"><div class="hname${on ? ' done-text' : ''}">${esc(h.name)}</div>
+            <div class="mini">${h.cadence === 'weekly' ? `${weekCount(h, iso)}/${Number(h.target) || 1} this week` : (streak(h) ? `${streak(h)}-day streak` : 'no streak yet')}</div></div>
+          ${habitOwed(h, iso) ? '<span class="pill warn">owed</span>' : ''}
+        </div>`;
+      }).join('')}</div>` : emptyState('No habits yet', 'The daily baseline lives here — add the few things you want on autopilot.', actBtn('Add a habit', 'habits')), { flush: true, actions: `<button class="btn sm ghost" data-goto="shared/habits">All habits</button>` })}
+    </div>
+
+    <div class="grid g-side">
+      ${panel("Today's classes", classes.length ? `<div class="list">${classes.map((s) => {
+        const isNow = toMin(s.start) <= nowMin && nowMin < toMin(s.end);
+        const past = toMin(s.end) <= nowMin;
+        return `<div class="list-row click${past ? ' done-text' : ''}" data-goto="uni/courses/${attr(s.courseId)}">
+          <div class="grow"><div class="t">${esc(courseName(s.courseId) || 'Unassigned')} ${isNow ? '<span class="pill ok">now</span>' : ''}</div>
+            <div class="m">${esc(titleCase(s.type))}${s.room ? ' · ' + esc(s.room) : ''}</div></div>
+          <span class="pill num">${esc(s.start)}–${esc(s.end)}</span></div>`;
+      }).join('')}</div>` : emptyState(((now.getDay() + 6) % 7) > 5 ? 'Nothing on a Sunday' : 'No classes today',
+        'The week is built on the CAU timetable.', `<button class="btn sm" data-goto="uni/timetable">Open timetable</button>`), { flush: true })}
+
+      ${panel('I owe teachers', owed.length ? `<div class="list">${owed.slice(0, 8).map(({ t, e }) => `
+        <div class="list-row click" data-goto="work/teachers/${attr(t.id)}">
+          <div class="grow"><div class="t trunc">${esc(e.text)}</div>
+            <div class="m">${esc(t.name)} · ${esc(fmtDay(e.date))}</div></div>
+          <span class="pill warn">open</span></div>`).join('')}</div>`
+        : emptyState('Nothing outstanding', 'Tasks you take on in a 1-1 appear here until you tick them off.'), { flush: true })}
+    </div>
+
+    ${soon.length ? panel('Rest of the week', `<div class="list">${soon.map(dlRow).join('')}</div>`, { flush: true }) : ''}`;
+
+  const acts = {
+    daily: openDailyNote,
+    quicknote: quickNoteDialog,
+    newtask: () => taskDialog(null, currentFace()),
+    habits: () => go('shared/habits'),
+    palette: () => openPalette(),
+  };
+  on('[data-act]', 'click', (e, el) => { const fn = acts[el.dataset.act]; if (fn) fn(); }, view);
+  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
+  on('[data-tick]', 'click', (e, el) => { toggleTick(el.dataset.tick, el.dataset.date); render(); }, view);
+  on('[data-open-task]', 'click', (e, el) => {
+    const t = taskById(el.dataset.openTask);
+    if (t) taskDialog(t, el.dataset.face || t.face);
+  }, view);
+}
+PAGES['shared/today'] = renderToday;
 
 /* ------------------------------------------------------------------- init */
 window.addEventListener('DOMContentLoaded', boot);

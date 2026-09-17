@@ -643,3 +643,43 @@ dialog.palette {
   display: flex; gap: 14px; padding: 8px 16px; border-top: 1px solid var(--line);
   font-size: 11px; color: var(--tx-3); font-family: var(--mono);
 }
+
+/* ---------- habits ---------- */
+.hlist > .hrow { border-bottom: 1px solid var(--line); }
+.hlist > .hrow:last-child { border-bottom: 0; }
+.hrow {
+  display: flex; align-items: center; gap: 14px; padding: 11px 14px;
+}
+.hrow.archived { opacity: .55; }
+.hmain { flex: 1; min-width: 0; }
+.hname { font-size: 13.5px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.hweek { display: flex; gap: 4px; flex: 0 0 auto; }
+.hcell {
+  width: 30px; padding: 4px 0; border-radius: var(--r-ctl);
+  background: var(--s2); border: 1px solid var(--line); color: var(--tx-3);
+  display: flex; flex-direction: column; align-items: center; gap: 1px; cursor: pointer;
+  font: inherit;
+}
+.hcell:hover:not([disabled]) { border-color: var(--accent); color: var(--tx); }
+.hcell.on { background: color-mix(in srgb, var(--ok) 18%, var(--s2)); border-color: var(--ok); color: var(--ok); }
+.hcell.off { color: var(--tx-3); }
+.hcell.idle { opacity: .4; cursor: default; }
+.hcell.today { box-shadow: inset 0 0 0 1px var(--accent); }
+.hcell-d { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; }
+.hcell-m { font-size: 13px; line-height: 1; font-family: var(--mono); }
+.hedit { flex: 0 0 auto; }
+
+.hmap { display: grid; gap: 7px; }
+.hmap-row { display: flex; align-items: center; gap: 12px; }
+.hmap-name { flex: 0 0 132px; font-size: 12px; color: var(--tx-2); }
+.hmap-cells { display: grid; grid-template-columns: repeat(84, 1fr); gap: 2px; flex: 1; min-width: 0; }
+.hdot { display: block; aspect-ratio: 1; border-radius: 2px; background: var(--s3); }
+.hdot.on { background: var(--ok); }
+.hdot.idle { background: var(--s2); opacity: .5; }  /* before the habit existed */
+
+@media (max-width: 760px) {
+  .hrow { flex-wrap: wrap; }
+  .hweek { order: 3; width: 100%; }
+  .hmap-name { flex-basis: 84px; }
+  .hmap-cells { grid-template-columns: repeat(42, 1fr); }
+}
