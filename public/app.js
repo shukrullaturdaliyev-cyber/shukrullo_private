@@ -3325,6 +3325,154 @@ function transferDialog() {
   });
 }
 
+/* ---- savings goals + the transfer nudge ---- */
+
+const savingsGoals = () => ensureFinances().goals || [];
+
+/** Saved so far, in UZS: the linked account's balance, or a figure you keep by hand. */
+function savedUZS(g) {
+  if (g.accountId) {
+    const acc = (ensureFinances().accounts || []).find((a) => a.id === g.accountId);
+    if (acc) return Math.max(0, accountBalanceUZS(acc));
+  }
+  return Number(g.saved) || 0;
+}
+function savingsProgress(g) {
+  const target = Number(g.target) || 0;
+  const have = savedUZS(g);
+  return { have, target, pct: target ? clamp(Math.round((have / target) * 100), 0, 100) : 0, left: Math.max(0, target - have) };
+}
+
+function savingsDialog(existing) {
+  const g = existing || { id: uid(), name: '', target: '', accountId: '', saved: 0, due: '', note: '' };
+  const accs = (ensureFinances().accounts || []).filter((a) => !a.archived);
+  openDialog({
+    title: existing ? 'Edit savings goal' : 'New savings goal',
+    body: `
+      <label class="f"><span>What for</span><input name="name" value="${attr(g.name)}" placeholder="Emergency fund"></label>
+      <div class="row">
+        <label class="f"><span>Target in ${esc(finDisplay)}</span><input name="target" inputmode="decimal" value="${attr(g.target ? round(disp(Number(g.target)), 2) : '')}"></label>
+        <label class="f"><span>By when (optional)</span><input name="due" type="date" value="${attr(g.due || '')}"></label>
+      </div>
+      <label class="f"><span>Track an account</span><select name="accountId">
+        <option value="">— keep the figure by hand —</option>
+        ${accs.map((a) => `<option value="${attr(a.id)}"${g.accountId === a.id ? ' selected' : ''}>${esc(a.name)} · ${esc(a.currency)}</option>`).join('')}
+      </select></label>
+      <label class="f" id="savedwrap"><span>Saved so far, in ${esc(finDisplay)}</span>
+        <input name="saved" inputmode="decimal" value="${attr(g.saved ? round(disp(Number(g.saved)), 2) : '')}"></label>
+      <label class="f"><span>Note</span><input name="note" value="${attr(g.note || '')}"></label>
+      <p class="mini">Link the account you actually keep the money in and the bar follows its balance. Otherwise set the figure yourself.</p>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delsav">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const sel = $('[name=accountId]', dlg);
+      const sync = () => { $('#savedwrap', dlg).style.display = sel.value ? 'none' : ''; };
+      sel.addEventListener('change', sync); sync();
+      const del = $('#delsav', dlg);
+      if (del) del.addEventListener('click', () => {
+        DB.finances.goals = savingsGoals().filter((x) => x.id !== g.id);
+        close(); saveRender('finances'); toast('Savings goal deleted');
+      });
+    },
+    onSubmit: (data) => {
+      const name = data.name.trim();
+      if (!name) { toast('Give the goal a name.', 'bad'); return false; }
+      const t = num(data.target);
+      const sv = num(data.saved);
+      Object.assign(g, {
+        name, accountId: data.accountId || '', due: data.due || '', note: data.note.trim(),
+        target: t == null ? 0 : (finDisplay === 'USD' ? t * usdRate() : t),
+        saved: data.accountId ? 0 : (sv == null ? 0 : (finDisplay === 'USD' ? sv * usdRate() : sv)),
+      });
+      if (!existing) DB.finances.goals.push(g);
+      saveRender('finances');
+    },
+  });
+}
+
+/** Words that mean "I moved this money", not "I spent it". */
+const MOVED_WORDS = /\b(saving|savings|jamg|avans|advance|deposit|transfer|withdraw|cash ?out|to card|to cash)\b/i;
+
+/** Expenses that look like money moved rather than money gone. */
+function suspectedTransfers(list) {
+  const accs = (ensureFinances().accounts || []).filter((a) => !a.archived);
+  const names = accs.map((a) => norm(a.name)).filter(Boolean);
+  return list.filter((t) => {
+    if ((t.kind || 'normal') !== 'normal' || Number(t.amount) >= 0) return false;
+    const hay = `${t.category || ''} ${t.note || ''}`;
+    if (MOVED_WORDS.test(hay)) return true;
+    // an expense categorised as one of your own accounts is a move, not a spend
+    return names.some((n) => n && norm(t.category) === n);
+  });
+}
+
+/** Turn a mis-filed expense into a real transfer, so spending stops being inflated. */
+function convertToTransferDialog(t) {
+  const accs = (ensureFinances().accounts || []).filter((a) => !a.archived && a.id !== t.accountId);
+  if (!accs.length) {
+    toast('Add the account the money went to first, then convert this.', 'bad');
+    return;
+  }
+  openDialog({
+    title: 'Money moved, not spent',
+    submitLabel: 'Make it a transfer',
+    body: `<p class="mini" style="margin:0 0 10px">“${esc(t.category || 'Uncategorised')}”${t.note ? ` · ${esc(t.note)}` : ''} —
+      ${esc(money(Math.abs(t.amount), t.currency || 'UZS'))} out of ${esc(accountName(t.accountId) || 'no account')} on ${esc(fmtDate(t.date))}.</p>
+      <label class="f"><span>Where did it go</span><select name="to">
+        ${accs.map((a) => `<option value="${attr(a.id)}">${esc(a.name)} · ${esc(a.currency)}</option>`).join('')}
+      </select></label>
+      <p class="mini">A transfer keeps the money on the books and out of this month's spending.</p>`,
+    onSubmit: (d) => {
+      if (!d.to) return false;
+      t.kind = 'transfer';
+      t.toAccountId = d.to;
+      t.amount = Math.abs(Number(t.amount) || 0);
+      if (!t.category || MOVED_WORDS.test(t.category)) t.category = t.category || 'Transfer';
+      saveRender('finances');
+      toast('Filed as a transfer', 'ok');
+    },
+  });
+}
+
+function savingsPanel() {
+  const goals = savingsGoals();
+  if (!goals.length) {
+    return panel('Savings goals', emptyState('No savings goals yet',
+      'Name what the money is for — a fund, a laptop, the next semester — and watch it fill.',
+      actBtn('Add a goal', 'newsav')), { flush: true });
+  }
+  return panel('Savings goals', `<div class="list">${goals.map((g) => {
+    const p = savingsProgress(g);
+    const late = g.due && p.pct < 100 && daysUntil(g.due) < 0;
+    return `<div class="list-row" style="display:block">
+      <div class="spread">
+        <span class="t">${esc(g.name)}${g.accountId ? ` <span class="mut">· ${esc(accountName(g.accountId))}</span>` : ''}
+          ${p.pct >= 100 ? '<span class="pill ok">reached</span>' : late ? `<span class="pill bad">${esc(relDays(g.due))}</span>` : ''}</span>
+        <span class="mini num">${esc(fmtDisp(p.have))}${p.target ? ' / ' + esc(fmtDisp(p.target)) : ''}</span>
+      </div>
+      <div class="bar ${p.pct >= 100 ? 'ok' : p.pct >= 50 ? '' : 'warn'}" style="margin:6px 0 4px"><i style="width:${p.pct}%"></i></div>
+      <div class="spread">
+        <span class="mini">${p.target ? (p.pct >= 100 ? 'done' : `${esc(fmtDisp(p.left))} to go${g.due ? ` · by ${esc(fmtDate(g.due))}` : ''}`) : 'no target set'}</span>
+        <button class="btn ghost sm" data-sav="${attr(g.id)}">edit</button>
+      </div>
+    </div>`;
+  }).join('')}</div>`, { flush: true, actions: `<button class="btn sm" data-act="newsav">+ Goal</button>` });
+}
+
+function nudgePanel(monthTx) {
+  const suspects = suspectedTransfers(monthTx);
+  if (!suspects.length) return '';
+  const total = Math.abs(sum(suspects.map(inUZS)));
+  return panel('Moved, or spent?', `<p class="mini" style="margin:0 0 9px">${suspects.length}
+    ${suspects.length === 1 ? 'expense looks' : 'expenses look'} like money moved rather than money gone —
+    ${esc(fmtDisp(total))} of this month's spending. Filing them as transfers keeps the balance right and takes them out of the total.</p>
+    <div class="list">${suspects.map((t) => `<div class="list-row">
+      <div class="grow"><div class="t">${esc(t.category || 'Uncategorised')}</div>
+        <div class="m">${esc(fmtDate(t.date, { day: 'numeric', month: 'short' }))}${t.note ? ' · ' + esc(t.note) : ''} · ${esc(accountName(t.accountId) || 'no account')}</div></div>
+      <span class="num">−${esc(money(Math.abs(t.amount), t.currency || 'UZS'))}</span>
+      <button class="btn sm" data-conv="${attr(t.id)}">It was a transfer</button>
+    </div>`).join('')}</div>`, { flush: true });
+}
+
 /* ------------------------------------------------------------- the page */
 
 function renderFinances(view) {
@@ -3453,8 +3601,10 @@ function renderFinances(view) {
                 <button class="btn ghost sm" data-budget="${attr(cat)}">set limit</button></div>
             </div>`;
           }).join('')}</div>` : emptyState('No categories yet', 'Spend something first, then set a monthly limit per category.'), { flush: true })}
+        ${savingsPanel()}
       </div>
-    </div>`;
+    </div>
+    ${nudgePanel(cur)}`;
 
   /* --- wiring --- */
   on('#curseg button', 'click', (e, b) => { finDisplay = b.dataset.cur; render(); }, document);
@@ -3464,6 +3614,15 @@ function renderFinances(view) {
   if (tm) tm.addEventListener('click', () => { finMonth = monthKey(new Date()); render(); });
   $('#addacc').addEventListener('click', () => accountDialog(null));
   $('#transfer').addEventListener('click', transferDialog);
+  on('[data-act=newsav]', 'click', () => savingsDialog(null), view);
+  on('[data-sav]', 'click', (e, el) => {
+    const g = savingsGoals().find((x) => x.id === el.dataset.sav);
+    if (g) savingsDialog(g);
+  }, view);
+  on('[data-conv]', 'click', (e, el) => {
+    const t = ensureFinances().tx.find((x) => x.id === el.dataset.conv);
+    if (t) convertToTransferDialog(t);
+  }, view);
 
   const qa = $('#quickadd');
   const qcur = $('[name=currency]', qa);
@@ -5001,6 +5160,7 @@ function paletteItems() {
   add('action', 'Weekly review', 'What closed, what slipped, what next', () => { go('shared/goals'); setTimeout(reviewDialog, 60); }, 4);
   add('action', 'Daily note', 'Today\u2019s page in the vault', openDailyNote, 4);
   add('action', 'Log sleep or weight', 'Today\u2019s row in the health log', () => healthDialog(healthOn(todayISO())), 4);
+  add('action', 'New savings goal', 'A pot with a target', () => { go('shared/finances'); setTimeout(() => savingsDialog(null), 60); }, 4);
   add('action', 'Log a 1-1', 'Open a teacher journal', () => go('work/teachers'), 4);
   add('action', 'Upload a CSV', 'Exam export or the quality survey', () => go('work/reports'), 4);
 
