@@ -256,7 +256,7 @@ function download(filename, text, mime = 'application/json') {
 
 /* --------------------------------------------------- 2. storage + sync layer */
 
-const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets', 'habits', 'goals', 'health'];
+const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets', 'habits', 'goals', 'health', 'admissions'];
 const LS = 'desk:';
 const PASS_KEY = 'desk:pass';
 
@@ -282,6 +282,7 @@ const DEFAULTS = () => ({
   habits: { items: [], ticks: {} },
   goals: { items: [], reviews: [] },
   health: { days: [] },
+  admissions: { apps: [], essays: [], recommenders: [], tests: [] },
 });
 
 let DB = DEFAULTS();
@@ -385,6 +386,11 @@ async function loadAll() {
   if (!Array.isArray(DB.goals.reviews)) DB.goals.reviews = [];
   DB.health = Object.assign({ days: [] }, DB.health || {});
   if (!Array.isArray(DB.health.days)) DB.health.days = [];
+  DB.admissions = Object.assign({ apps: [], essays: [], recommenders: [], tests: [] }, DB.admissions || {});
+  ['apps', 'essays', 'recommenders', 'tests'].forEach((k) => { if (!Array.isArray(DB.admissions[k])) DB.admissions[k] = []; });
+  DB.admissions.apps.forEach((a) => {
+    ['reqs', 'essayIds', 'recs', 'interviews'].forEach((k) => { if (!Array.isArray(a[k])) a[k] = []; });
+  });
   if (!Array.isArray(DB.finances.goals)) DB.finances.goals = [];
   ensureFinances();
   setSync(REMOTE ? 'cloud' : 'local');
@@ -582,6 +588,14 @@ const NAV = {
     { id: 'tasks', label: 'Tasks', ico: '▤' },
     { id: 'konspekty', label: 'Konspekty', ico: '✎' },
   ],
+  adm: [
+    { id: 'overview', label: 'Overview', ico: '◇' },
+    { id: 'applications', label: 'Applications', ico: '⌸' },
+    { id: 'essays', label: 'Essays', ico: '✑' },
+    { id: 'recommenders', label: 'Recommenders', ico: '☏' },
+    { id: 'tests', label: 'Tests & scores', ico: '⊞' },
+    { id: 'tasks', label: 'Tasks', ico: '▤' },
+  ],
   shared: [
     { id: 'today', label: 'Today', ico: '◈' },
     { id: 'calendar', label: 'Calendar', ico: '▣' },
@@ -594,20 +608,33 @@ const NAV = {
   ],
 };
 
+/** The three faces the desk wears, in switcher order. */
+const FACES = [
+  { id: 'work', label: 'Work', name: 'SATashkent', title: 'SATashkent' },
+  { id: 'uni', label: 'CAU', name: 'CAU', title: 'Central Asian University' },
+  { id: 'adm', label: 'Apply', name: 'Admissions', title: 'Admissions — universities and scholarships' },
+];
+const FACE_IDS = FACES.map((f) => f.id);
+const isFace = (v) => FACE_IDS.includes(v);
+/** The last face that was not the shared one, for pages that belong to nobody. */
+const lastFace = () => (isFace(DB.settings.lastFace) ? DB.settings.lastFace : 'work');
+
 function route() {
   const raw = (location.hash || '').replace(/^#\/?/, '');
   const parts = raw.split('/').filter(Boolean).map(decodeURIComponent);
   let [face, page, param] = parts;
-  if (!['work', 'uni', 'shared'].includes(face)) face = DB.settings.lastFace === 'uni' ? 'uni' : 'work';
+  if (!isFace(face) && face !== 'shared') face = lastFace();
   const pages = face === 'shared' ? NAV.shared : NAV[face];
   if (!pages.some((p) => p.id === page)) page = face === 'shared' ? 'today' : 'overview';
   return { face, page, param: param || '', rest: parts.slice(3) };
 }
 const currentFace = () => {
   const r = route();
-  if (r.face !== 'shared') return r.face;
-  return DB.settings.lastFace === 'uni' ? 'uni' : 'work';
+  return r.face === 'shared' ? lastFace() : r.face;
 };
+const faceLabel = (id) => (FACES.find((f) => f.id === id) || {}).label || id;
+/** What to call a face in a sentence — shorter than its title, longer than its tab. */
+const faceName = (id) => (FACES.find((f) => f.id === id) || {}).name || id;
 const go = (hash) => { location.hash = hash; };
 const href = (h) => `#${h}`;
 
@@ -621,9 +648,8 @@ function renderShell() {
   $('#app').innerHTML = `<div class="shell">
     <aside class="side">
       <div class="top">
-        <div class="seg" id="faceseg">
-          <button data-face="work">Work</button>
-          <button data-face="uni" title="Central Asian University">CAU</button>
+        <div class="seg seg-3" id="faceseg">
+          ${FACES.map((f) => `<button data-face="${f.id}" title="${attr(f.title)}">${esc(f.label)}</button>`).join('')}
         </div>
       </div>
       <nav id="nav"></nav>
@@ -661,6 +687,9 @@ function renderNav() {
     reports: DB.datasets.length,
     teachers: DB.teachers.filter((t) => !t.left).length,
     notes: DB.notes.length,
+    applications: openApps().length,
+    essays: (DB.admissions.essays || []).filter((e) => e.status !== 'final').length,
+    recommenders: (DB.admissions.recommenders || []).length,
   };
   const group = (title, list, faceKey, titleHTML) => `<div class="navgroup">${titleHTML || esc(title)}</div>` + list.map((p) => {
     const active = r.face === faceKey && r.page === p.id;
@@ -669,8 +698,9 @@ function renderNav() {
       <span class="ico">${p.ico}</span>${esc(p.label)}${badge}</a>`;
   }).join('');
 
+  const groupTitle = { work: 'SATashkent', uni: 'Central Asian University', adm: 'Admissions' }[face] || '';
   $('#nav').innerHTML =
-    group(face === 'work' ? 'SATashkent' : 'Central Asian University', NAV[face], face,
+    group(groupTitle, NAV[face], face,
       face === 'uni' ? `<img src="/assets/cau.png" alt="Central Asian University" class="nav-logo">` : '') +
     group('Everywhere', NAV.shared, 'shared');
 
@@ -690,9 +720,8 @@ function topbar(title, { crumb = '', actions = '' } = {}) {
     </div>
     <div class="spacer"></div>
     <div class="wrap">${actions}
-      <span class="seg" id="faceseg-m" style="display:none">
-        <button data-face="work"${face === 'work' ? ' aria-pressed="true"' : ''}>Work</button>
-        <button data-face="uni"${face === 'uni' ? ' aria-pressed="true"' : ''}>CAU</button>
+      <span class="seg seg-3" id="faceseg-m" style="display:none">
+        ${FACES.map((f) => `<button data-face="${f.id}"${face === f.id ? ' aria-pressed="true"' : ''}>${esc(f.label)}</button>`).join('')}
       </span>
     </div>`;
   if (window.matchMedia('(max-width: 900px)').matches) {
@@ -814,8 +843,8 @@ function shiftBy(stepDue, oldDue, newDue) {
   return toISO(addDays(fromISO(newDue), gap));
 }
 
-function taskDialog(existing, face, presetCourse) {
-  const t = existing || { id: uid(), face, title: '', due: '', link: '', notes: '', course: presetCourse || '', status: 'todo', progress: 0, steps: [] };
+function taskDialog(existing, face, presetCourse, presetApp) {
+  const t = existing || { id: uid(), face, title: '', due: '', link: '', notes: '', course: presetCourse || '', app: presetApp || '', status: 'todo', progress: 0, steps: [] };
   const steps = (t.steps || []).map((s) => ({ ...s }));
   const courses = DB.uni.courses || [];
 
@@ -836,6 +865,8 @@ function taskDialog(existing, face, presetCourse) {
       ${goalsOpen().map((g) => `<option value="${attr(g.id)}"${t.goal === g.id ? ' selected' : ''}>${esc(g.title)}</option>`).join('')}</select></label>` : ''}
     ${face === 'uni' ? `<label class="f"><span>Course</span><select name="course"><option value="">— none —</option>
       ${courses.map((c) => `<option value="${attr(c.id)}"${t.course === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}
+    ${face === 'adm' && allApps().length ? `<label class="f"><span>Application</span><select name="app"><option value="">— none —</option>
+      ${allApps().map((a) => `<option value="${attr(a.id)}"${t.app === a.id ? ' selected' : ''}>${esc(appTitle(a))}</option>`).join('')}</select></label>` : ''}
     <div class="row">
       <label class="f"><span>Repeats</span><select name="rev">
         ${REPEATS.map(([v, l]) => `<option value="${v}"${(t.repeat && t.repeat.every || '') === v ? ' selected' : ''}>${l}</option>`).join('')}
@@ -885,6 +916,7 @@ function taskDialog(existing, face, presetCourse) {
       Object.assign(t, {
         title, due: data.due || '', link: data.link.trim(), notes: data.notes,
         course: data.course || '', status: data.status, progress: Number(data.progress) || 0,
+        app: data.app == null ? (t.app || '') : data.app,
         goal: data.goal == null ? (t.goal || '') : data.goal,
         steps: steps.filter((s) => s.text.trim()).map((s) => ({ ...s, text: s.text.trim() })),
         repeat: data.rev ? {
@@ -926,7 +958,7 @@ function taskCard(t) {
 
 function renderTasks(view, r) {
   const face = r.face;
-  topbar(face === 'work' ? 'Tasks' : 'CAU tasks', {
+  topbar(face === 'work' ? 'Tasks' : `${faceName(face)} tasks`, {
     actions: `<button class="btn primary" id="newtask">+ New task</button>`,
   });
   const mine = DB.tasks.filter((t) => t.face === face);
@@ -3787,6 +3819,7 @@ const SOURCES = {
   exams: { label: 'Exams', color: '#ef6b6b' },
   deadlines: { label: 'Deadlines', color: '#f0b344' },
   oneonones: { label: '1-1s logged', color: '#c42a4a' },
+  admissions: { label: 'Admissions', color: '#5b8def' },
 };
 const hidden = () => new Set(DB.settings.hiddenSources || []);
 function toggleSource(key) {
@@ -3842,15 +3875,29 @@ function deskEvents(from, to) {
     });
   }
   if (!h.has('deadlines')) {
-    ['work', 'uni'].forEach((face) => deadlineRows(face).forEach((row) => {
+    FACE_IDS.forEach((face) => deadlineRows(face).forEach((row) => {
       const d = fromISO(row.due);
       if (!d || d < from || d >= to) return;
       out.push({
         id: 'dl-' + face + row.id + row.label, title: row.label, start: startOfDay(d), end: startOfDay(d),
-        allDay: true, source: 'deadlines', color: SOURCES.deadlines.color, meta: face === 'work' ? 'work' : 'university',
+        allDay: true, source: 'deadlines', color: SOURCES.deadlines.color, meta: faceName(face),
         link: `${face}/tasks`,
       });
     }));
+  }
+  if (!h.has('admissions')) {
+    admissionDates().forEach((ev) => {
+      const d = fromISO(ev.date);
+      if (!d || d < from || d >= to) return;
+      const timed = ev.kind === 'interview' && ev.time;
+      out.push({
+        id: 'adm-' + ev.appId + ev.kind + ev.date, title: ev.label,
+        start: timed ? atTime(d, ev.time) : startOfDay(d),
+        end: timed ? new Date(atTime(d, ev.time).getTime() + 3600e3) : startOfDay(d),
+        allDay: !timed, source: 'admissions', color: SOURCES.admissions.color,
+        meta: ev.kind, link: `adm/applications/${ev.appId}`,
+      });
+    });
   }
   if (!h.has('oneonones')) {
     DB.teachers.forEach((t) => {
@@ -4260,6 +4307,8 @@ function renderSettings(view) {
         <div class="list-row"><div class="grow">Habits</div><span class="num">${habitItems(true).length}${Object.keys(DB.habits.ticks || {}).length ? ` <span class="mut">· ${Object.keys(DB.habits.ticks).length} days ticked</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Goals</div><span class="num">${goalItems().length}${(DB.goals.reviews || []).length ? ` <span class="mut">· ${DB.goals.reviews.length} reviews</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Health days</div><span class="num">${(DB.health.days || []).length}</span></div>
+        <div class="list-row"><div class="grow">Applications</div><span class="num">${allApps().length}${(DB.admissions.essays || []).length ? ` <span class="mut">· ${DB.admissions.essays.length} essays</span>` : ''}</span></div>
+        <div class="list-row"><div class="grow">Recommenders</div><span class="num">${(DB.admissions.recommenders || []).length}${(DB.admissions.tests || []).length ? ` <span class="mut">· ${DB.admissions.tests.length} tests</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Local cache</div><span class="num">${Math.round(bytes / 1024)} KB</span></div>
       </div>`, { flush: true })}
 
@@ -4603,8 +4652,9 @@ function renderToday(view) {
   const owedHabits = live.filter((h) => habitOwed(h, iso));
   const doneHabits = live.filter((h) => isTicked(h.id, iso));
 
-  const deadlines = [...deadlineRows('work').map((d) => ({ ...d, face: 'work' })),
-    ...deadlineRows('uni').map((d) => ({ ...d, face: 'uni' }))];
+  const deadlines = FACE_IDS.flatMap((f) => deadlineRows(f).map((d) => ({ ...d, face: f })));
+  const admSoon = admissionDates().filter((d) => { const n = daysUntil(d.date); return n >= 0 && n <= 30; });
+  const admLate = admissionAlerts().filter((x) => x.kind === 'bad');
   const overdue = deadlines.filter((d) => daysUntil(d.due) < 0);
   const today = deadlines.filter((d) => daysUntil(d.due) === 0);
   const soon = deadlines.filter((d) => { const n = daysUntil(d.due); return n > 0 && n <= 7; });
@@ -4621,6 +4671,8 @@ function renderToday(view) {
   else if (nextCls) lines.push({ kind: '', html: `${esc(courseName(nextCls.courseId) || 'Class')} at <b>${esc(nextCls.start)}</b>` });
   if (owedHabits.length) lines.push({ kind: '', html: `<b>${owedHabits.length}</b> ${owedHabits.length === 1 ? 'habit' : 'habits'} owed` });
   if (owed.length) lines.push({ kind: '', html: `<b>${owed.length}</b> you owe teachers` });
+  if (admLate.length) lines.push({ kind: 'bad', html: `<b>${admLate.length}</b> application${admLate.length === 1 ? '' : 's'} past a deadline` });
+  else if (admSoon.length) lines.push({ kind: admSoon[0] && daysUntil(admSoon[0].date) <= 7 ? 'warn' : '', html: `${esc(admSoon[0].label.split(' — ')[0])} <b>${esc(relDays(admSoon[0].date))}</b>` });
   if (!lines.length) lines.push({ kind: 'good', html: 'Nothing owed, nothing overdue. Rare and good.' });
 
   topbar(' ');
@@ -4628,7 +4680,7 @@ function renderToday(view) {
 
   const dlRow = (d) => `<div class="list-row click" data-open-task="${attr(d.id)}" data-face="${attr(d.face)}">
     <div class="grow"><div class="t">${esc(d.label)}</div>
-      <div class="m">${d.kind === 'step' ? 'step' : 'final deadline'} · ${d.face === 'work' ? 'SATashkent' : 'CAU'}</div></div>
+      <div class="m">${d.kind === 'step' ? 'step' : 'final deadline'} · ${esc(faceName(d.face))}</div></div>
     <span class="pill ${dueClass(d.due)}">${esc(fmtDay(d.due))}</span></div>`;
 
   view.innerHTML = `
@@ -4641,7 +4693,10 @@ function renderToday(view) {
       ${statBox(`${doneHabits.length}/${live.length}`, 'habits today',
         owedHabits.length ? `<div class="delta flat">${owedHabits.length} owed</div>` : live.length ? `<div class="delta up">all done</div>` : '')}
       ${statBox(classes.length, 'classes today', nextCls ? `<div class="delta flat">next ${esc(nextCls.start)}</div>` : '')}
-      ${statBox(ne ? daysUntil(ne.date) : '—', 'days to next exam', ne ? `<div class="delta flat">${esc(ne.course)}</div>` : '')}
+      ${admSoon.length || allApps().length
+        ? statBox(admSoon.length ? daysUntil(admSoon[0].date) : '—', 'days to the next application date',
+          admSoon.length ? `<div class="delta flat">${esc(admSoon[0].label.split(' — ')[0])}</div>` : `<div class="delta flat">${openApps().length} open</div>`)
+        : statBox(ne ? daysUntil(ne.date) : '—', 'days to next exam', ne ? `<div class="delta flat">${esc(ne.course)}</div>` : '')}
     </div>
 
     <div class="grid g-side">
@@ -4678,6 +4733,12 @@ function renderToday(view) {
           <span class="pill warn">open</span></div>`).join('')}</div>`
         : emptyState('Nothing outstanding', 'Tasks you take on in a 1-1 appear here until you tick them off.'), { flush: true })}
     </div>
+
+    ${admSoon.length ? panel('Admissions, next 30 days', `<div class="list">${admSoon.slice(0, 8).map((d) => `
+      <div class="list-row click" data-goto="adm/applications/${attr(d.appId)}">
+        <div class="grow"><div class="t">${esc(d.label)}</div><div class="m">${esc(d.kind)}${d.time ? ' · ' + esc(d.time) : ''}</div></div>
+        <span class="pill ${dueClass(d.date)}">${esc(fmtDay(d.date))}</span></div>`).join('')}</div>`,
+      { flush: true, actions: `<button class="btn sm ghost" data-goto="adm/overview">Admissions</button>` }) : ''}
 
     ${soon.length ? panel('Rest of the week', `<div class="list">${soon.map(dlRow).join('')}</div>`, { flush: true }) : ''}`;
 
@@ -4780,7 +4841,7 @@ function linkTasksDialog(g) {
       <div class="list">${pool.map((t) => `<label class="list-row" style="cursor:pointer">
         <input type="checkbox" name="t_${attr(t.id)}"${t.goal === g.id ? ' checked' : ''}>
         <div class="grow"><div class="t">${esc(t.title)}</div>
-          <div class="m">${t.face === 'work' ? 'SATashkent' : 'CAU'}${t.due ? ' · ' + esc(fmtDay(t.due)) : ''}${t.goal && t.goal !== g.id ? ' · under ' + esc((goalById(t.goal) || {}).title || 'another goal') : ''}</div></div>
+          <div class="m">${esc(faceName(t.face))}${t.due ? ' · ' + esc(fmtDay(t.due)) : ''}${t.goal && t.goal !== g.id ? ' · under ' + esc((goalById(t.goal) || {}).title || 'another goal') : ''}</div></div>
       </label>`).join('')}</div>`,
     onSubmit: (data) => {
       pool.forEach((t) => {
@@ -4816,7 +4877,7 @@ function goalCard(g) {
     ${linked.length ? `<div class="list" style="margin-top:9px">${linked.map((t) => `
       <div class="list-row click" data-open-task="${attr(t.id)}">
         <div class="grow"><div class="t${t.status === 'done' ? ' done-text' : ''}">${esc(t.title)}</div>
-          <div class="m">${t.face === 'work' ? 'SATashkent' : 'CAU'} · ${esc(STATUSES.find((s) => s[0] === (t.status || 'todo'))[1])}</div></div>
+          <div class="m">${esc(faceName(t.face))} · ${esc(STATUSES.find((s) => s[0] === (t.status || 'todo'))[1])}</div></div>
         ${t.due ? `<span class="pill ${dueClass(t.due)}">${esc(fmtDay(t.due))}</span>` : ''}</div>`).join('')}</div>` : ''}
     <div class="wrap" style="margin-top:10px">
       <button class="btn sm" data-link="${attr(g.id)}">Link tasks</button>
@@ -4857,7 +4918,7 @@ function renderGoals(view) {
     ${unlinked && open.length ? panel('Not serving anything', `<p class="mini" style="margin:0 0 8px">${unlinked} open task${unlinked === 1 ? '' : 's'} sit outside every goal. That is fine for errands — worth a look for anything bigger.</p>
       <div class="list">${DB.tasks.filter((t) => t.status !== 'done' && !t.goal).slice(0, 10).map((t) => `
         <div class="list-row click" data-open-task="${attr(t.id)}">
-          <div class="grow"><div class="t">${esc(t.title)}</div><div class="m">${t.face === 'work' ? 'SATashkent' : 'CAU'}</div></div>
+          <div class="grow"><div class="t">${esc(t.title)}</div><div class="m">${esc(faceName(t.face))}</div></div>
           ${t.due ? `<span class="pill ${dueClass(t.due)}">${esc(fmtDay(t.due))}</span>` : ''}</div>`).join('')}</div>`) : ''}
 
     ${done.length ? panel(`Achieved · ${done.length}`, `<div class="goals">${done.map(goalCard).join('')}</div>`) : ''}
@@ -4928,7 +4989,7 @@ function reviewDialog() {
       </div>
       ${f.closed.length ? `<p class="mini b">CLOSED</p><div class="list" style="margin-bottom:10px">${f.closed.slice(0, 12).map((t) => `
         <div class="list-row"><div class="grow"><div class="t">${esc(t.title)}</div>
-          <div class="m">${t.face === 'work' ? 'SATashkent' : 'CAU'}${repeatOf(t) ? ' · ' + esc(repeatLabel(t)) : ''}</div></div></div>`).join('')}</div>` : ''}
+          <div class="m">${esc(faceName(t.face))}${repeatOf(t) ? ' · ' + esc(repeatLabel(t)) : ''}</div></div></div>`).join('')}</div>` : ''}
       ${f.slipped.length ? `<p class="mini b">SLIPPED PAST ITS DATE</p><div class="list" style="margin-bottom:10px">${f.slipped.map((t) => `
         <div class="list-row"><div class="grow"><div class="t">${esc(t.title)}</div><div class="m">${esc(relDays(t.due))}</div></div></div>`).join('')}</div>` : ''}
       ${f.habitRows.length ? `<p class="mini b">HABITS</p><div class="list" style="margin-bottom:10px">${f.habitRows.map((r) => `
@@ -5134,6 +5195,1017 @@ function renderHealth(view) {
 }
 PAGES['shared/health'] = renderHealth;
 
+/* ========================================================= 10. admissions ==
+   Universities and scholarships: one application per row, each carrying its
+   own requirement checklist, essays, recommenders, interviews and money.     */
+
+const STAGES = [
+  ['researching', 'Researching'], ['preparing', 'Preparing'],
+  ['submitted', 'Submitted'], ['interview', 'Interview'], ['decided', 'Decided'],
+];
+const OUTCOMES = [
+  ['', 'No word yet'], ['accepted', 'Accepted'], ['waitlisted', 'Waitlisted'],
+  ['deferred', 'Deferred'], ['rejected', 'Rejected'], ['withdrawn', 'Withdrawn'],
+];
+const ROUNDS = [['', 'No round'], ['ED', 'Early Decision'], ['ED2', 'Early Decision II'],
+  ['EA', 'Early Action'], ['REA', 'Restrictive Early Action'], ['RD', 'Regular Decision'], ['rolling', 'Rolling']];
+const REC_STATES = [['asked', 'Asked'], ['accepted', 'Agreed'], ['submitted', 'Submitted']];
+
+/** What a first-time application almost always needs. Editable per app. */
+const REQ_TEMPLATE = {
+  university: ['Transcript', 'Personal statement', 'Recommendation letters', 'English test score',
+    'SAT / ACT score', 'Passport copy', 'CV / résumé', 'Financial documents', 'Application fee or waiver'],
+  scholarship: ['Motivation letter', 'Recommendation letters', 'Transcript', 'Proof of admission',
+    'Financial need documents', 'CV / résumé', 'Passport copy'],
+};
+
+const adm = () => DB.admissions;
+const allApps = () => adm().apps || [];
+const appById = (id) => allApps().find((a) => a.id === id);
+const openApps = () => allApps().filter((a) => a.status !== 'decided' || !a.outcome);
+const essayById = (id) => (adm().essays || []).find((e) => e.id === id);
+const recById = (id) => (adm().recommenders || []).find((r) => r.id === id);
+const appsUsingEssay = (id) => allApps().filter((a) => (a.essayIds || []).includes(id));
+const appsForRec = (id) => allApps().filter((a) => (a.recs || []).some((r) => r.recId === id));
+
+const appTitle = (a) => [a.school, a.program].filter(Boolean).join(' · ') || 'Untitled application';
+const stageLabel = (v) => (STAGES.find((s) => s[0] === v) || ['', v])[1];
+const outcomeLabel = (v) => (OUTCOMES.find((o) => o[0] === v) || ['', v])[1];
+
+/** Requirement progress for one application. */
+function reqProgress(a) {
+  const list = a.reqs || [];
+  const done = list.filter((r) => r.done).length;
+  return { done, total: list.length, pct: list.length ? Math.round((done / list.length) * 100) : 0 };
+}
+/** A recommender counts as settled once the letter is in. */
+function recProgress(a) {
+  const list = a.recs || [];
+  return { done: list.filter((r) => r.status === 'submitted').length, total: list.length };
+}
+
+/** Everything the admissions face owes a date to — deadlines, decisions, interviews. */
+function admissionDates() {
+  const out = [];
+  allApps().forEach((a) => {
+    if (a.status === 'decided') {
+      if (a.replyBy) out.push({ appId: a.id, date: a.replyBy, kind: 'reply', label: `${appTitle(a)} — reply by` });
+      return;
+    }
+    if (a.deadline && a.status !== 'submitted' && a.status !== 'interview') {
+      out.push({ appId: a.id, date: a.deadline, kind: 'deadline', label: `${appTitle(a)} — deadline` });
+    }
+    if (a.decisionDate && a.status !== 'decided') {
+      out.push({ appId: a.id, date: a.decisionDate, kind: 'decision', label: `${appTitle(a)} — decision due` });
+    }
+    (a.interviews || []).filter((i) => !i.done && i.date).forEach((i) => {
+      out.push({ appId: a.id, date: i.date, time: i.time || '', kind: 'interview', label: `${appTitle(a)} — interview` });
+    });
+  });
+  return out.sort((x, y) => x.date.localeCompare(y.date));
+}
+const nextAdmissionDate = () => admissionDates().find((d) => daysUntil(d.date) >= 0) || null;
+
+/** Money: what an offer actually costs once aid is subtracted. */
+const netCost = (a) => Math.max(0, (Number(a.cost) || 0) - (Number(a.aid) || 0));
+function feesDue() {
+  const by = {};
+  allApps().filter((a) => !a.feeWaived && a.status !== 'decided' && Number(a.fee) > 0)
+    .forEach((a) => { const c = a.currency || 'USD'; by[c] = (by[c] || 0) + Number(a.fee); });
+  return by;
+}
+
+/** The things that will sink an application if nobody looks at them. */
+function admissionAlerts() {
+  const out = [];
+  const soon = (iso) => { const n = daysUntil(iso); return n != null && n <= 21; };
+  allApps().forEach((a) => {
+    if (a.status === 'decided') return;
+    const near = a.deadline && soon(a.deadline);
+    const days = a.deadline ? daysUntil(a.deadline) : null;
+    if (a.deadline && days < 0 && a.status !== 'submitted') {
+      out.push({ kind: 'bad', appId: a.id, text: `${appTitle(a)} — deadline passed ${-days} day${-days === 1 ? '' : 's'} ago and it is not submitted` });
+      return;
+    }
+    if (!near) return;
+    const rp = reqProgress(a);
+    if (rp.total && rp.done < rp.total) {
+      out.push({ kind: 'warn', appId: a.id, text: `${appTitle(a)} — ${rp.total - rp.done} requirement${rp.total - rp.done === 1 ? '' : 's'} outstanding, ${relDays(a.deadline)}` });
+    }
+    const pending = (a.recs || []).filter((r) => r.status !== 'submitted');
+    if (pending.length) {
+      out.push({ kind: 'warn', appId: a.id, text: `${appTitle(a)} — ${pending.length} letter${pending.length === 1 ? '' : 's'} not in yet, ${relDays(a.deadline)}` });
+    }
+    if (!(a.recs || []).length) {
+      out.push({ kind: 'warn', appId: a.id, text: `${appTitle(a)} — no recommender asked yet, ${relDays(a.deadline)}` });
+    }
+    const unfinished = (a.essayIds || []).map(essayById).filter((e) => e && e.status !== 'final');
+    if (unfinished.length) {
+      out.push({ kind: 'warn', appId: a.id, text: `${appTitle(a)} — ${unfinished.length} essay${unfinished.length === 1 ? '' : 's'} still in draft, ${relDays(a.deadline)}` });
+    }
+    if (!a.feeWaived && Number(a.fee) > 0 && a.status === 'preparing') {
+      out.push({ kind: '', appId: a.id, text: `${appTitle(a)} — ${money(Number(a.fee), a.currency || 'USD')} fee still to pay` });
+    }
+  });
+  return out;
+}
+
+
+/* ---- dialogs ---- */
+
+const ADM_CUR = ['USD', 'EUR', 'GBP', 'UZS', 'KRW', 'JPY', 'TRY', 'RUB', 'CNY', 'CHF', 'CAD', 'AUD', 'SGD', 'AED'];
+const FITS = [['', 'Unrated'], ['reach', 'Reach'], ['target', 'Target'], ['safety', 'Safety']];
+const LEVELS = ['Bachelor', 'Master', 'Exchange', 'Summer school', 'Foundation', 'PhD'];
+const curOptions = (sel) => ADM_CUR.map((c) => `<option value="${c}"${c === sel ? ' selected' : ''}>${c}</option>`).join('');
+
+function appDialog(existing) {
+  const a = existing || {
+    id: uid(), kind: 'university', school: '', program: '', level: 'Bachelor', country: '',
+    round: '', deadline: '', decisionDate: '', status: 'researching', outcome: '', fit: '',
+    portal: '', fee: '', feeWaived: false, cost: '', aid: '', currency: 'USD', notes: '',
+    reqs: [], essayIds: [], recs: [], interviews: [], created: todayISO(),
+  };
+  openDialog({
+    title: existing ? 'Edit application' : 'New application',
+    wide: true,
+    body: `
+      <div class="row">
+        <label class="f"><span>University or funder</span><input name="school" value="${attr(a.school)}" placeholder="e.g. KAIST"></label>
+        <label class="f"><span>Kind</span><select name="kind">
+          <option value="university"${a.kind === 'university' ? ' selected' : ''}>University</option>
+          <option value="scholarship"${a.kind === 'scholarship' ? ' selected' : ''}>Scholarship</option>
+        </select></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Programme or award</span><input name="program" value="${attr(a.program || '')}" placeholder="e.g. BSc Computer Science"></label>
+        <label class="f"><span>Level</span><input name="level" value="${attr(a.level || '')}" list="admlevels"></label>
+      </div>
+      <datalist id="admlevels">${LEVELS.map((l) => `<option value="${l}">`).join('')}</datalist>
+      <div class="row">
+        <label class="f"><span>Country</span><input name="country" value="${attr(a.country || '')}" placeholder="South Korea"></label>
+        <label class="f"><span>Round</span><select name="round">
+          ${ROUNDS.map(([v, l]) => `<option value="${v}"${a.round === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Deadline</span><input name="deadline" type="date" value="${attr(a.deadline || '')}"></label>
+        <label class="f"><span>Decision expected</span><input name="decisionDate" type="date" value="${attr(a.decisionDate || '')}"></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Stage</span><select name="status">
+          ${STAGES.map(([v, l]) => `<option value="${v}"${a.status === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+        <label class="f"><span>How likely</span><select name="fit">
+          ${FITS.map(([v, l]) => `<option value="${v}"${(a.fit || '') === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+      </div>
+      <label class="f"><span>Application portal</span><input name="portal" value="${attr(a.portal || '')}" placeholder="https://…"></label>
+      <div class="row">
+        <label class="f"><span>Currency</span><select name="currency">${curOptions(a.currency || 'USD')}</select></label>
+        <label class="f"><span>Application fee</span><input name="fee" inputmode="decimal" value="${attr(a.fee || '')}"></label>
+        <label class="f"><span><input type="checkbox" name="feeWaived"${a.feeWaived ? ' checked' : ''}> Fee waived</span></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Cost a year (tuition + living)</span><input name="cost" inputmode="decimal" value="${attr(a.cost || '')}"></label>
+        <label class="f"><span>Aid or scholarship a year</span><input name="aid" inputmode="decimal" value="${attr(a.aid || '')}"></label>
+      </div>
+      <label class="f"><span>Notes</span><textarea name="notes" rows="3" placeholder="Eligibility, who to email, anything odd about this one">${esc(a.notes || '')}</textarea></label>
+      ${existing ? '' : `<label class="f"><span><input type="checkbox" name="tpl" checked> Start with the usual ${a.kind === 'scholarship' ? 'scholarship' : 'application'} checklist</span></label>`}`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delapp">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delapp', dlg);
+      if (del) del.addEventListener('click', () => {
+        confirmDialog('Delete application', `“${appTitle(a)}” goes, with its checklist, interviews and links. Essays and recommenders stay.`, () => {
+          adm().apps = allApps().filter((x) => x.id !== a.id);
+          save('admissions');
+          close();
+          if (route().param === a.id) go('adm/applications'); else render();
+          toast('Application deleted');
+        });
+      });
+    },
+    onSubmit: (data) => {
+      const school = data.school.trim();
+      if (!school) { toast('An application needs a university or funder.', 'bad'); return false; }
+      const wasNew = !existing;
+      Object.assign(a, {
+        school, program: data.program.trim(), kind: data.kind, level: data.level.trim(),
+        country: data.country.trim(), round: data.round, deadline: data.deadline || '',
+        decisionDate: data.decisionDate || '', status: data.status, fit: data.fit,
+        portal: data.portal.trim(), currency: data.currency,
+        fee: data.fee.trim(), feeWaived: !!data.feeWaived,
+        cost: data.cost.trim(), aid: data.aid.trim(), notes: data.notes.trim(),
+      });
+      if (wasNew) {
+        if (data.tpl) a.reqs = (REQ_TEMPLATE[a.kind] || []).map((text) => ({ id: uid(), text, done: false, due: '' }));
+        adm().apps.push(a);
+      }
+      saveRender('admissions');
+      if (wasNew) go(`adm/applications/${a.id}`);
+    },
+  });
+}
+
+/** One line on an application's checklist. */
+function reqDialog(a, existing) {
+  const q = existing || { id: uid(), text: '', due: '', done: false, note: '' };
+  openDialog({
+    title: existing ? 'Edit requirement' : 'Add requirement',
+    body: `
+      <label class="f"><span>What is needed</span><input name="text" value="${attr(q.text)}" placeholder="e.g. Sealed transcript"></label>
+      <div class="row">
+        <label class="f"><span>Needed by (optional)</span><input name="due" type="date" value="${attr(q.due || '')}"></label>
+        <label class="f"><span><input type="checkbox" name="done"${q.done ? ' checked' : ''}> Done</span></label>
+      </div>
+      <label class="f"><span>Note</span><input name="note" value="${attr(q.note || '')}" placeholder="Where it is, who sends it"></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delreq">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delreq', dlg);
+      if (del) del.addEventListener('click', () => {
+        a.reqs = (a.reqs || []).filter((x) => x.id !== q.id);
+        close(); saveRender('admissions');
+      });
+    },
+    onSubmit: (data) => {
+      const text = data.text.trim();
+      if (!text) { toast('Name the requirement.', 'bad'); return false; }
+      Object.assign(q, { text, due: data.due || '', done: !!data.done, note: data.note.trim() });
+      if (!existing) (a.reqs = a.reqs || []).push(q);
+      saveRender('admissions');
+    },
+  });
+}
+
+/** Paste a whole requirement list off a university page, one per line. */
+function bulkReqDialog(a) {
+  openDialog({
+    title: 'Paste a requirement list',
+    submitLabel: 'Add them',
+    body: `<p class="mini">One per line, straight off their page. Anything already on the checklist is skipped.</p>
+      <label class="f"><span>Requirements</span><textarea name="text" rows="10" placeholder="Transcript&#10;Two letters of recommendation&#10;IELTS 6.5"></textarea></label>`,
+    onSubmit: (data) => {
+      const have = new Set((a.reqs || []).map((r) => norm(r.text)));
+      const lines = data.text.split('\n').map((s) => s.replace(/^[\s•\-*\d.)]+/, '').trim())
+        .filter((s) => s && !have.has(norm(s)));
+      if (!lines.length) { toast('Nothing new in that list.', 'bad'); return false; }
+      lines.forEach((text) => (a.reqs = a.reqs || []).push({ id: uid(), text, done: false, due: '' }));
+      saveRender('admissions');
+      toast(`${lines.length} requirement${lines.length === 1 ? '' : 's'} added`);
+    },
+  });
+}
+
+function interviewDialog(a, existing) {
+  const iv = existing || { id: uid(), date: '', time: '', mode: 'online', who: '', notes: '', done: false };
+  openDialog({
+    title: existing ? 'Edit interview' : 'Add interview',
+    body: `
+      <div class="row">
+        <label class="f"><span>Date</span><input name="date" type="date" value="${attr(iv.date || '')}"></label>
+        <label class="f"><span>Time</span><input name="time" type="time" value="${attr(iv.time || '')}"></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Where</span><select name="mode">
+          ${['online', 'on campus', 'phone', 'recorded'].map((m) => `<option value="${m}"${iv.mode === m ? ' selected' : ''}>${titleCase(m)}</option>`).join('')}
+        </select></label>
+        <label class="f"><span>With whom</span><input name="who" value="${attr(iv.who || '')}" placeholder="Admissions officer, alumnus…"></label>
+      </div>
+      <label class="f"><span>Notes</span><textarea name="notes" rows="3" placeholder="Questions to ask, what they asked">${esc(iv.notes || '')}</textarea></label>
+      <label class="f"><span><input type="checkbox" name="done"${iv.done ? ' checked' : ''}> Already happened</span></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="deliv">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#deliv', dlg);
+      if (del) del.addEventListener('click', () => {
+        a.interviews = (a.interviews || []).filter((x) => x.id !== iv.id);
+        close(); saveRender('admissions');
+      });
+    },
+    onSubmit: (data) => {
+      if (!data.date) { toast('An interview needs a date.', 'bad'); return false; }
+      Object.assign(iv, {
+        date: data.date, time: data.time || '', mode: data.mode,
+        who: data.who.trim(), notes: data.notes.trim(), done: !!data.done,
+      });
+      if (!existing) (a.interviews = a.interviews || []).push(iv);
+      if (!iv.done && a.status !== 'decided') a.status = 'interview';
+      saveRender('admissions');
+    },
+  });
+}
+
+/** Record the answer, and the money that comes with it. */
+function decisionDialog(a) {
+  openDialog({
+    title: `Decision · ${appTitle(a)}`,
+    body: `
+      <label class="f"><span>What did they say</span><select name="outcome">
+        ${OUTCOMES.map(([v, l]) => `<option value="${v}"${(a.outcome || '') === v ? ' selected' : ''}>${l}</option>`).join('')}
+      </select></label>
+      <div class="row">
+        <label class="f"><span>Heard on</span><input name="decidedOn" type="date" value="${attr(a.decidedOn || todayISO())}"></label>
+        <label class="f"><span>Aid offered a year (${esc(a.currency || 'USD')})</span><input name="aid" inputmode="decimal" value="${attr(a.aid || '')}"></label>
+      </div>
+      <label class="f"><span>Reply by</span><input name="replyBy" type="date" value="${attr(a.replyBy || '')}"></label>
+      <label class="f"><span>Notes</span><textarea name="dnotes" rows="2" placeholder="Conditions, next steps">${esc(a.dnotes || '')}</textarea></label>`,
+    onSubmit: (data) => {
+      Object.assign(a, {
+        outcome: data.outcome, decidedOn: data.decidedOn || '', aid: data.aid.trim(),
+        replyBy: data.replyBy || '', dnotes: data.dnotes.trim(),
+      });
+      if (data.outcome) a.status = 'decided';
+      saveRender('admissions');
+    },
+  });
+}
+
+/* ---- essays ---- */
+
+const ESSAY_STATES = [['idea', 'Idea'], ['draft', 'Draft'], ['revising', 'Revising'], ['final', 'Final']];
+const essayStateLabel = (v) => (ESSAY_STATES.find((s) => s[0] === v) || ['', v])[1];
+
+function essayDialog(existing, presetAppId) {
+  const e = existing || { id: uid(), title: '', prompt: '', limit: '', unit: 'words', status: 'idea', due: '', noteId: '', created: todayISO() };
+  openDialog({
+    title: existing ? 'Edit essay' : 'New essay',
+    body: `
+      <label class="f"><span>Working title</span><input name="title" value="${attr(e.title)}" placeholder="e.g. Why this programme"></label>
+      <label class="f"><span>The prompt, in their words</span><textarea name="prompt" rows="4" placeholder="Paste the question exactly as asked">${esc(e.prompt || '')}</textarea></label>
+      <div class="row">
+        <label class="f"><span>Limit</span><input name="limit" inputmode="numeric" value="${attr(e.limit || '')}" placeholder="650"></label>
+        <label class="f"><span>Counted in</span><select name="unit">
+          ${['words', 'characters'].map((u) => `<option value="${u}"${e.unit === u ? ' selected' : ''}>${u}</option>`).join('')}
+        </select></label>
+        <label class="f"><span>Status</span><select name="status">
+          ${ESSAY_STATES.map(([v, l]) => `<option value="${v}"${e.status === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+      </div>
+      <label class="f"><span>Want it done by</span><input name="due" type="date" value="${attr(e.due || '')}"></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delessay">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delessay', dlg);
+      if (del) del.addEventListener('click', () => {
+        const used = appsUsingEssay(e.id).length;
+        confirmDialog('Delete essay', `“${e.title}” goes off the list${used ? ` and off ${used} application${used === 1 ? '' : 's'}` : ''}. The note in the vault stays.`, () => {
+          adm().essays = (adm().essays || []).filter((x) => x.id !== e.id);
+          allApps().forEach((a) => { a.essayIds = (a.essayIds || []).filter((id) => id !== e.id); });
+          close(); saveRender('admissions'); toast('Essay deleted');
+        });
+      });
+    },
+    onSubmit: (data) => {
+      const title = data.title.trim();
+      if (!title) { toast('An essay needs a title.', 'bad'); return false; }
+      Object.assign(e, {
+        title, prompt: data.prompt.trim(), limit: data.limit.trim(), unit: data.unit,
+        status: data.status, due: data.due || '',
+      });
+      if (!existing) {
+        (adm().essays = adm().essays || []).push(e);
+        const a = presetAppId && appById(presetAppId);
+        if (a) (a.essayIds = a.essayIds || []).push(e.id);
+      }
+      saveRender('admissions');
+    },
+  });
+}
+
+/** Essays live in the vault, so drafting happens in the writer you already use. */
+function openEssayNote(e) {
+  let note = e.noteId && noteById(e.noteId);
+  if (!note) {
+    const head = [`# ${e.title}`, '', e.prompt ? `> ${e.prompt}` : '',
+      e.limit ? `> Limit: ${e.limit} ${e.unit || 'words'}` : '', '', ''].filter((l) => l !== null).join('\n');
+    note = createNote({ title: e.title, path: 'Admissions/Essays', body: head });
+    e.noteId = note.id;
+    save('admissions');
+  }
+  go(`shared/notes/${note.id}`);
+}
+
+function attachEssaysDialog(a) {
+  const pool = adm().essays || [];
+  if (!pool.length) { essayDialog(null, a.id); return; }
+  openDialog({
+    title: 'Essays for this application',
+    submitLabel: 'Attach',
+    body: `<p class="mini">One essay can serve several applications — tick it here and it counts on both.</p>
+      <div class="list">${pool.map((e) => `<label class="list-row" style="cursor:pointer">
+        <input type="checkbox" name="e_${attr(e.id)}"${(a.essayIds || []).includes(e.id) ? ' checked' : ''}>
+        <div class="grow"><div class="t">${esc(e.title)}</div>
+          <div class="m">${esc(essayStateLabel(e.status))}${e.limit ? ` · ${esc(e.limit)} ${esc(e.unit || 'words')}` : ''}${appsUsingEssay(e.id).length ? ` · on ${appsUsingEssay(e.id).length} application${appsUsingEssay(e.id).length === 1 ? '' : 's'}` : ''}</div></div>
+      </label>`).join('')}</div>`,
+    extraFooter: `<button type="button" class="btn left" id="newessay">+ Write a new one</button>`,
+    onOpen: (dlg, close) => {
+      $('#newessay', dlg).addEventListener('click', () => { close(); essayDialog(null, a.id); });
+    },
+    onSubmit: (data) => {
+      a.essayIds = pool.filter((e) => data['e_' + e.id]).map((e) => e.id);
+      saveRender('admissions');
+    },
+  });
+}
+
+/* ---- recommenders ---- */
+
+function recDialog(existing) {
+  const p = existing || { id: uid(), name: '', role: '', org: '', email: '', phone: '', known: '', notes: '' };
+  openDialog({
+    title: existing ? 'Edit recommender' : 'New recommender',
+    body: `
+      <label class="f"><span>Name</span><input name="name" value="${attr(p.name)}" placeholder="Who is writing for you"></label>
+      <div class="row">
+        <label class="f"><span>Role</span><input name="role" value="${attr(p.role || '')}" placeholder="Physics teacher"></label>
+        <label class="f"><span>Where</span><input name="org" value="${attr(p.org || '')}" placeholder="SATashkent"></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Email</span><input name="email" type="email" value="${attr(p.email || '')}"></label>
+        <label class="f"><span>Phone</span><input name="phone" value="${attr(p.phone || '')}"></label>
+      </div>
+      <label class="f"><span>How they know you</span><input name="known" value="${attr(p.known || '')}" placeholder="Taught me two years, supervised the olympiad team"></label>
+      <label class="f"><span>Notes</span><textarea name="notes" rows="3" placeholder="What to remind them of, what they need from you">${esc(p.notes || '')}</textarea></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delrec">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delrec', dlg);
+      if (del) del.addEventListener('click', () => {
+        const n = appsForRec(p.id).length;
+        confirmDialog('Delete recommender', `${p.name} goes${n ? `, and off ${n} application${n === 1 ? '' : 's'}` : ''}.`, () => {
+          adm().recommenders = (adm().recommenders || []).filter((x) => x.id !== p.id);
+          allApps().forEach((a) => { a.recs = (a.recs || []).filter((r) => r.recId !== p.id); });
+          close(); saveRender('admissions'); toast('Recommender deleted');
+        });
+      });
+    },
+    onSubmit: (data) => {
+      const name = data.name.trim();
+      if (!name) { toast('A recommender needs a name.', 'bad'); return false; }
+      Object.assign(p, {
+        name, role: data.role.trim(), org: data.org.trim(), email: data.email.trim(),
+        phone: data.phone.trim(), known: data.known.trim(), notes: data.notes.trim(),
+      });
+      if (!existing) (adm().recommenders = adm().recommenders || []).push(p);
+      saveRender('admissions');
+    },
+  });
+}
+
+/** Ask someone for this application's letter — and set the date you asked. */
+function askRecDialog(a) {
+  const pool = adm().recommenders || [];
+  if (!pool.length) { recDialog(null); return; }
+  openDialog({
+    title: 'Letters for this application',
+    submitLabel: 'Save',
+    body: `<p class="mini">Tick whoever is writing. Their status starts at <b>asked</b> — move it along on the application page.</p>
+      <div class="list">${pool.map((p) => {
+        const mine = (a.recs || []).find((r) => r.recId === p.id);
+        return `<label class="list-row" style="cursor:pointer">
+          <input type="checkbox" name="r_${attr(p.id)}"${mine ? ' checked' : ''}>
+          <div class="grow"><div class="t">${esc(p.name)}</div>
+            <div class="m">${esc([p.role, p.org].filter(Boolean).join(' · ') || 'recommender')} · writing for ${appsForRec(p.id).length}</div></div>
+          ${mine ? `<span class="pill ${mine.status === 'submitted' ? 'ok' : 'warn'}">${esc((REC_STATES.find((s) => s[0] === mine.status) || ['', mine.status])[1])}</span>` : ''}
+        </label>`;
+      }).join('')}</div>
+      <label class="f" style="margin-top:12px"><span>Letters this application wants</span>
+        <input name="need" inputmode="numeric" value="${attr(a.recsNeeded || '')}" placeholder="2"></label>`,
+    extraFooter: `<button type="button" class="btn left" id="newrec">+ Someone new</button>`,
+    onOpen: (dlg, close) => {
+      $('#newrec', dlg).addEventListener('click', () => { close(); recDialog(null); });
+    },
+    onSubmit: (data) => {
+      const keep = [];
+      pool.forEach((p) => {
+        if (!data['r_' + p.id]) return;
+        keep.push((a.recs || []).find((r) => r.recId === p.id)
+          || { recId: p.id, status: 'asked', asked: todayISO(), due: a.deadline || '' });
+      });
+      a.recs = keep;
+      a.recsNeeded = String(data.need || '').trim();
+      saveRender('admissions');
+    },
+  });
+}
+
+/* ---- tests ---- */
+
+const TEST_NAMES = ['IELTS', 'TOEFL iBT', 'Duolingo English Test', 'SAT', 'ACT', 'SAT Subject', 'GRE', 'GMAT', 'AP', 'IB', 'TOPIK', 'DELF', 'TestDaF'];
+const TEST_STATES = [['planned', 'Planned'], ['registered', 'Registered'], ['taken', 'Taken'], ['scored', 'Scored']];
+
+function testDialog(existing) {
+  const t = existing || { id: uid(), name: '', date: '', status: 'planned', score: '', target: '', subs: [], cost: '', currency: 'USD', expires: '', notes: '' };
+  const subs = (t.subs || []).map((s) => ({ ...s }));
+  const subsHTML = () => subs.map((s, i) => `<div class="row" data-sub="${i}" style="margin-bottom:6px;align-items:center">
+      <input data-slabel="${i}" value="${attr(s.label)}" placeholder="Section" style="flex:2">
+      <input data-sscore="${i}" value="${attr(s.score)}" placeholder="Score" style="flex:1">
+      <button type="button" class="btn danger sm" data-sdel="${i}">✕</button>
+    </div>`).join('') || `<p class="mini">No section scores yet.</p>`;
+  openDialog({
+    title: existing ? 'Edit test' : 'New test',
+    body: `
+      <div class="row">
+        <label class="f"><span>Test</span><input name="name" value="${attr(t.name)}" list="testnames" placeholder="IELTS"></label>
+        <label class="f"><span>Date</span><input name="date" type="date" value="${attr(t.date || '')}"></label>
+      </div>
+      <datalist id="testnames">${TEST_NAMES.map((n) => `<option value="${n}">`).join('')}</datalist>
+      <div class="row">
+        <label class="f"><span>Status</span><select name="status">
+          ${TEST_STATES.map(([v, l]) => `<option value="${v}"${t.status === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+        <label class="f"><span>Score</span><input name="score" value="${attr(t.score || '')}" placeholder="7.5"></label>
+        <label class="f"><span>Target</span><input name="target" value="${attr(t.target || '')}" placeholder="7.0"></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Fee</span><input name="cost" inputmode="decimal" value="${attr(t.cost || '')}"></label>
+        <label class="f"><span>Currency</span><select name="currency">${curOptions(t.currency || 'USD')}</select></label>
+        <label class="f"><span>Valid until</span><input name="expires" type="date" value="${attr(t.expires || '')}"></label>
+      </div>
+      <div class="spread" style="margin:14px 0 6px"><span class="mini b">SECTION SCORES</span><button type="button" class="btn sm" id="addsub">+ Section</button></div>
+      <div id="sublist">${subsHTML()}</div>
+      <label class="f" style="margin-top:12px"><span>Notes</span><textarea name="notes" rows="2" placeholder="Centre, which universities the report went to">${esc(t.notes || '')}</textarea></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="deltest">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const list = $('#sublist', dlg);
+      const redraw = () => { list.innerHTML = subsHTML(); };
+      $('#addsub', dlg).addEventListener('click', () => { subs.push({ label: '', score: '' }); redraw(); });
+      list.addEventListener('input', (e) => {
+        const el = e.target;
+        if (el.dataset.slabel != null) subs[+el.dataset.slabel].label = el.value;
+        if (el.dataset.sscore != null) subs[+el.dataset.sscore].score = el.value;
+      });
+      list.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-sdel]');
+        if (b) { subs.splice(+b.dataset.sdel, 1); redraw(); }
+      });
+      const del = $('#deltest', dlg);
+      if (del) del.addEventListener('click', () => {
+        adm().tests = (adm().tests || []).filter((x) => x.id !== t.id);
+        close(); saveRender('admissions'); toast('Test deleted');
+      });
+    },
+    onSubmit: (data) => {
+      const name = data.name.trim();
+      if (!name) { toast('Which test is it?', 'bad'); return false; }
+      Object.assign(t, {
+        name, date: data.date || '', status: data.status, score: data.score.trim(),
+        target: data.target.trim(), cost: data.cost.trim(), currency: data.currency,
+        expires: data.expires || '', notes: data.notes.trim(),
+        subs: subs.filter((s) => s.label.trim() || String(s.score).trim())
+          .map((s) => ({ label: s.label.trim(), score: String(s.score).trim() })),
+      });
+      if (!existing) (adm().tests = adm().tests || []).push(t);
+      saveRender('admissions');
+    },
+  });
+}
+
+/* ---- shared bits of markup ---- */
+
+const OUTCOME_TONE = { accepted: 'ok', waitlisted: 'warn', deferred: 'warn', rejected: 'bad', withdrawn: '' };
+
+function appPills(a) {
+  const rp = reqProgress(a);
+  return [
+    `<span class="pill${a.kind === 'scholarship' ? ' accent' : ''}">${a.kind === 'scholarship' ? 'scholarship' : 'university'}</span>`,
+    a.round ? `<span class="pill">${esc((ROUNDS.find((x) => x[0] === a.round) || ['', a.round])[1])}</span>` : '',
+    a.deadline ? `<span class="pill ${dueClass(a.deadline)}">${esc(fmtDay(a.deadline))}</span>` : '<span class="pill warn">no deadline</span>',
+    rp.total ? `<span class="pill${rp.done === rp.total ? ' ok' : ''}">${rp.done}/${rp.total} ready</span>` : '',
+    a.outcome ? `<span class="pill ${OUTCOME_TONE[a.outcome] || ''}">${esc(outcomeLabel(a.outcome))}</span>` : '',
+  ].filter(Boolean).join('');
+}
+
+function appRow(a) {
+  const rp = reqProgress(a);
+  return `<div class="list-row click" data-app="${attr(a.id)}">
+    <div class="grow">
+      <div class="t">${esc(appTitle(a))}</div>
+      <div class="m">${[a.country, a.level, stageLabel(a.status)].filter(Boolean).map(esc).join(' · ')}</div>
+    </div>
+    <div class="admbarwrap">${rp.total ? `<div class="bar ${rp.pct === 100 ? 'ok' : rp.pct >= 50 ? '' : 'warn'}"><i style="width:${rp.pct}%"></i></div>` : ''}</div>
+    <div class="wrap">${appPills(a)}</div>
+  </div>`;
+}
+
+/* ---- the pages ---- */
+
+function renderAdmOverview(view) {
+  const apps = allApps();
+  const open = openApps();
+  const alerts = admissionAlerts();
+  const dates = admissionDates().filter((d) => daysUntil(d.date) >= 0);
+  const next = dates[0] || null;
+  const submitted = apps.filter((a) => ['submitted', 'interview', 'decided'].includes(a.status));
+  const offers = apps.filter((a) => a.outcome === 'accepted');
+  const reqAll = apps.filter((a) => a.status !== 'decided').flatMap((a) => a.reqs || []);
+  const reqDone = reqAll.filter((r) => r.done).length;
+  const lettersWanted = apps.filter((a) => a.status !== 'decided').flatMap((a) => a.recs || []);
+  const lettersIn = lettersWanted.filter((r) => r.status === 'submitted').length;
+  const essays = adm().essays || [];
+  const essaysLeft = essays.filter((e) => e.status !== 'final');
+
+  const lines = [];
+  if (next) lines.push({ kind: dueClass(next.date) === 'bad' ? 'bad' : dueClass(next.date) === 'warn' ? 'warn' : '', html: `${esc(next.label)} <b>${esc(relDays(next.date))}</b>` });
+  if (alerts.some((x) => x.kind === 'bad')) lines.push({ kind: 'bad', html: `<b>${alerts.filter((x) => x.kind === 'bad').length}</b> past a deadline` });
+  if (essaysLeft.length) lines.push({ kind: '', html: `<b>${essaysLeft.length}</b> ${essaysLeft.length === 1 ? 'essay' : 'essays'} unfinished` });
+  const lettersOut = lettersWanted.length - lettersIn;
+  if (lettersOut > 0) lines.push({ kind: '', html: `<b>${lettersOut}</b> letter${lettersOut === 1 ? '' : 's'} outstanding` });
+  if (!lines.length) lines.push({ kind: 'good', html: apps.length ? 'Nothing overdue. Keep drafting.' : 'Nothing on the list yet — add the first university.' });
+
+  topbar('Admissions', {
+    actions: `<button class="btn" id="newessay2">+ Essay</button><button class="btn primary" id="newapp">+ Application</button>`,
+  });
+
+  const stageCols = STAGES.map(([id, label]) => {
+    const list = apps.filter((a) => (a.status || 'researching') === id)
+      .sort((x, y) => (x.deadline || '9999').localeCompare(y.deadline || '9999'));
+    return `<div class="pipecol">
+      <header><h4>${esc(label)}</h4><span class="mini num">${list.length}</span></header>
+      ${list.map((a) => `<button class="pipecard" data-app="${attr(a.id)}">
+        <span class="pt">${esc(a.school)}</span>
+        <span class="mini">${esc(a.program || a.level || '')}</span>
+        <span class="wrap">${a.deadline ? `<span class="pill ${dueClass(a.deadline)}">${esc(fmtDay(a.deadline))}</span>` : ''}
+        ${a.outcome ? `<span class="pill ${OUTCOME_TONE[a.outcome] || ''}">${esc(outcomeLabel(a.outcome))}</span>` : ''}</span>
+      </button>`).join('') || '<div class="mini mut" style="padding:8px 2px">—</div>'}
+    </div>`;
+  }).join('');
+
+  view.innerHTML = `
+    ${hero('Admissions', apps.length ? `${apps.length} on the list · ${submitted.length} submitted` : 'Universities and scholarships', lines,
+      `${actBtn('+ Application', 'newapp')}${actBtn('+ Essay', 'newessay')}${actBtn('Add a test score', 'newtest')}`)}
+
+    <div class="stats">
+      ${statBox(open.length, 'still open', submitted.length ? `<div class="delta up">${submitted.length} submitted</div>` : '')}
+      ${statBox(next ? daysUntil(next.date) : '—', 'days to the next date', next ? `<div class="delta flat">${esc(next.label.split(' — ')[0])}</div>` : '')}
+      ${statBox(reqAll.length ? `${Math.round((reqDone / reqAll.length) * 100)}%` : '—', 'of the paperwork done',
+        reqAll.length ? `<div class="delta flat">${reqDone}/${reqAll.length} items</div>` : '')}
+      ${statBox(`${lettersIn}/${lettersWanted.length || 0}`, 'letters in', offers.length ? `<div class="delta up">${offers.length} offer${offers.length === 1 ? '' : 's'}</div>` : '')}
+    </div>
+
+    ${alerts.length ? panel('Wants attention', `<div class="list">${alerts.slice(0, 12).map((x) => `
+      <div class="list-row click" data-app="${attr(x.appId)}">
+        <div class="grow"><div class="t">${esc(x.text)}</div></div>
+        <span class="pill ${x.kind}">${x.kind === 'bad' ? 'late' : x.kind === 'warn' ? 'soon' : 'note'}</span></div>`).join('')}</div>`, { flush: true }) : ''}
+
+    ${apps.length ? panel('The pipeline', `<div class="pipe">${stageCols}</div>`, { sub: 'Every application, by how far along it is' })
+      : emptyState('No applications yet', 'Put the first university or scholarship on the list — the checklist comes with it.', actBtn('Add an application', 'newapp'))}
+
+    <div class="grid g-side">
+      ${panel('What is coming', dates.length ? `<div class="list">${dates.slice(0, 10).map((d) => `
+        <div class="list-row click" data-app="${attr(d.appId)}">
+          <div class="grow"><div class="t">${esc(d.label)}</div>
+            <div class="m">${esc(d.kind)}${d.time ? ' · ' + esc(d.time) : ''}</div></div>
+          <span class="pill ${dueClass(d.date)}">${esc(fmtDay(d.date))}</span></div>`).join('')}</div>`
+        : emptyState('No dates ahead', 'Deadlines, decision dates and interviews all show up here.'), { flush: true })}
+
+      ${panel('Essays', essays.length ? `<div class="list">${essays.slice(0, 8).map((e) => `
+        <div class="list-row click" data-essay="${attr(e.id)}">
+          <div class="grow"><div class="t">${esc(e.title)}</div>
+            <div class="m">${appsUsingEssay(e.id).length} application${appsUsingEssay(e.id).length === 1 ? '' : 's'}${e.limit ? ` · ${esc(e.limit)} ${esc(e.unit || 'words')}` : ''}</div></div>
+          <span class="pill ${e.status === 'final' ? 'ok' : e.status === 'idea' ? 'warn' : ''}">${esc(essayStateLabel(e.status))}</span></div>`).join('')}</div>`
+        : emptyState('No essays yet', 'Every prompt you have to answer, in one place.', actBtn('Add an essay', 'newessay')),
+        { flush: true, actions: `<button class="btn sm ghost" data-goto="adm/essays">All essays</button>` })}
+    </div>
+
+    ${panel('Money', `<div class="list">
+      ${Object.keys(feesDue()).length
+        ? Object.entries(feesDue()).map(([cur, v], i, all) => `<div class="list-row"><div class="grow">Application fees still to pay${all.length > 1 ? ` · ${esc(cur)}` : ''}</div><span class="num">${esc(money(v, cur))}</span></div>`).join('')
+        : '<div class="list-row"><div class="grow">Application fees still to pay</div><span class="num">nothing outstanding</span></div>'}
+      ${offers.map((a) => `<div class="list-row click" data-app="${attr(a.id)}">
+        <div class="grow"><div class="t">${esc(appTitle(a))}</div><div class="m">cost ${esc(money(Number(a.cost) || 0, a.currency || 'USD'))} · aid ${esc(money(Number(a.aid) || 0, a.currency || 'USD'))}</div></div>
+        <span class="num">${esc(money(netCost(a), a.currency || 'USD'))} a year</span></div>`).join('')}
+      ${offers.length ? '' : '<div class="list-row"><div class="grow mut">Net cost of each offer lands here once a decision is in.</div></div>'}
+    </div>`, { flush: true, sub: 'Fees are counted in the currency each application is set to' })}`;
+
+  $('#newapp').addEventListener('click', () => appDialog(null));
+  $('#newessay2').addEventListener('click', () => essayDialog(null));
+  const acts = { newapp: () => appDialog(null), newessay: () => essayDialog(null), newtest: () => testDialog(null) };
+  on('[data-act]', 'click', (e, el) => { const fn = acts[el.dataset.act]; if (fn) fn(); }, view);
+  on('[data-app]', 'click', (e, el) => go(`adm/applications/${el.dataset.app}`), view);
+  on('[data-essay]', 'click', (e, el) => { const x = essayById(el.dataset.essay); if (x) essayDialog(x); }, view);
+  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
+}
+PAGES['adm/overview'] = renderAdmOverview;
+
+function renderApplications(view, r) {
+  if (r.param) {
+    const a = appById(r.param);
+    if (a) return renderAppPage(view, a);
+    go('adm/applications');
+    return;
+  }
+  const apps = [...allApps()].sort((x, y) => (x.deadline || '9999').localeCompare(y.deadline || '9999'));
+  const decided = apps.filter((a) => a.status === 'decided');
+  const live = apps.filter((a) => a.status !== 'decided');
+  const unis = live.filter((a) => a.kind !== 'scholarship');
+  const schols = live.filter((a) => a.kind === 'scholarship');
+
+  topbar('Applications', { actions: `<button class="btn primary" id="newapp">+ Application</button>` });
+
+  const section = (title, list, hint) => list.length
+    ? panel(`${title} · ${list.length}`, `<div class="list">${list.map(appRow).join('')}</div>`, { flush: true })
+    : panel(title, `<p class="mini" style="margin:0">${esc(hint)}</p>`);
+
+  view.innerHTML = apps.length ? `
+    <div class="stats">
+      ${statBox(live.length, 'open applications')}
+      ${statBox(unis.length, 'universities')}
+      ${statBox(schols.length, 'scholarships')}
+      ${statBox(decided.length, 'decided', decided.filter((a) => a.outcome === 'accepted').length ? `<div class="delta up">${decided.filter((a) => a.outcome === 'accepted').length} accepted</div>` : '')}
+    </div>
+    ${section('Universities', unis, 'No university applications open.')}
+    ${section('Scholarships', schols, 'No scholarship applications open — most universities have their own, and they close earlier than the course deadline.')}
+    ${decided.length ? panel(`Decided · ${decided.length}`, `<div class="list">${decided.map(appRow).join('')}</div>`, { flush: true }) : ''}`
+    : emptyState('No applications yet', 'One row per university or scholarship, each with its own checklist, essays, letters and dates.', actBtn('Add the first one', 'newapp'));
+
+  $('#newapp').addEventListener('click', () => appDialog(null));
+  on('[data-act=newapp]', 'click', () => appDialog(null), view);
+  on('[data-app]', 'click', (e, el) => go(`adm/applications/${el.dataset.app}`), view);
+}
+PAGES['adm/applications'] = renderApplications;
+
+function renderAppPage(view, a) {
+  const rp = reqProgress(a);
+  const rc = recProgress(a);
+  const essays = (a.essayIds || []).map(essayById).filter(Boolean);
+  const tasks = DB.tasks.filter((t) => t.app === a.id);
+  const reqs = [...(a.reqs || [])].sort((x, y) => Number(x.done) - Number(y.done));
+  const ivs = [...(a.interviews || [])].sort((x, y) => (x.date || '').localeCompare(y.date || ''));
+
+  topbar(a.school, {
+    crumb: `<a href="#adm/applications">Applications</a> · ${esc(a.kind === 'scholarship' ? 'Scholarship' : 'University')}`,
+    actions: `${a.portal ? `<a class="btn" href="${attr(a.portal)}" target="_blank" rel="noopener">Portal ↗</a>` : ''}
+      <button class="btn" id="decide">Record decision</button><button class="btn primary" id="editapp">Edit</button>`,
+  });
+
+  const lines = [];
+  if (a.deadline) lines.push({ kind: dueClass(a.deadline), html: `deadline <b>${esc(fmtDate(a.deadline))}</b> · ${esc(relDays(a.deadline))}` });
+  if (a.decisionDate) lines.push({ kind: '', html: `decision <b>${esc(fmtDate(a.decisionDate))}</b>` });
+  if (a.replyBy) lines.push({ kind: dueClass(a.replyBy), html: `reply by <b>${esc(fmtDate(a.replyBy))}</b>` });
+  if (a.outcome) lines.push({ kind: a.outcome === 'accepted' ? 'good' : a.outcome === 'rejected' ? 'bad' : 'warn', html: `<b>${esc(outcomeLabel(a.outcome))}</b>` });
+  if (!lines.length) lines.push({ kind: '', html: 'No dates set yet — add the deadline so it can chase you.' });
+
+  const stepper = `<div class="stepper">${STAGES.map(([id, label], i) => {
+    const at = STAGES.findIndex((s) => s[0] === (a.status || 'researching'));
+    return `<button class="step${i <= at ? ' on' : ''}${i === at ? ' now' : ''}" data-stage="${id}">
+      <span class="sn">${i + 1}</span>${esc(label)}</button>`;
+  }).join('')}</div>`;
+
+  view.innerHTML = `
+    ${hero(appTitle(a), [a.level, a.country, (ROUNDS.find((x) => x[0] === a.round) || ['', ''])[1], (FITS.find((f) => f[0] === a.fit) || ['', ''])[1]].filter(Boolean).join(' · ') || 'Application', lines)}
+
+    ${panel('Where it stands', stepper, { sub: 'Click a stage to move it' })}
+
+    <div class="stats">
+      ${statBox(`${rp.done}/${rp.total}`, 'requirements done', rp.total ? `<div class="delta ${rp.pct === 100 ? 'up' : 'flat'}">${rp.pct}%</div>` : '')}
+      ${statBox(`${rc.done}/${rc.total || (a.recsNeeded || 0)}`, 'letters in')}
+      ${statBox(`${essays.filter((e) => e.status === 'final').length}/${essays.length}`, 'essays final')}
+      ${statBox(esc(money(netCost(a), a.currency || 'USD')), 'net cost a year',
+        a.aid ? `<div class="delta up">${esc(money(Number(a.aid) || 0, a.currency || 'USD'))} aid</div>` : '')}
+    </div>
+
+    <div class="grid g-side">
+      ${panel('Checklist', reqs.length ? `<div class="list">${reqs.map((q) => `
+        <div class="list-row">
+          <button class="tick${q.done ? ' on' : ''}" data-req="${attr(q.id)}" title="${q.done ? 'Undo' : 'Mark done'}">${q.done ? '✓' : ''}</button>
+          <div class="grow click" data-editreq="${attr(q.id)}"><div class="t${q.done ? ' done-text' : ''}">${esc(q.text)}</div>
+            ${q.note ? `<div class="m">${esc(q.note)}</div>` : ''}</div>
+          ${q.due ? `<span class="pill ${q.done ? '' : dueClass(q.due)}">${esc(fmtDay(q.due))}</span>` : ''}
+        </div>`).join('')}</div>`
+        : emptyState('Nothing on the checklist', 'Add what they ask for, or paste their list straight in.', `${actBtn('+ Requirement', 'addreq')}${actBtn('Paste a list', 'bulkreq')}`),
+        { flush: reqs.length > 0, actions: `<button class="btn sm" data-act="addreq">+ Item</button><button class="btn sm ghost" data-act="bulkreq">Paste list</button>` })}
+
+      ${panel('Letters', (a.recs || []).length ? `<div class="list">${(a.recs || []).map((r) => {
+        const p = recById(r.recId) || { name: 'Someone who is gone' };
+        const st = REC_STATES.find((s) => s[0] === r.status) || ['asked', 'Asked'];
+        return `<div class="list-row">
+          <div class="grow click" data-rec="${attr(r.recId)}"><div class="t">${esc(p.name)}</div>
+            <div class="m">${esc([p.role, p.org].filter(Boolean).join(' · '))}${r.asked ? ` · asked ${esc(fmtDate(r.asked))}` : ''}</div></div>
+          <button class="btn sm ${r.status === 'submitted' ? 'primary' : ''}" data-recnext="${attr(r.recId)}" title="Move it along">${esc(st[1])}</button>
+        </div>`;
+      }).join('')}</div>` : emptyState('No letters lined up', 'Ask early — a good letter takes a teacher two weeks.', actBtn('Ask someone', 'askrec')),
+        { flush: (a.recs || []).length > 0, actions: `<button class="btn sm" data-act="askrec">Manage</button>` })}
+    </div>
+
+    <div class="grid g-side">
+      ${panel('Essays', essays.length ? `<div class="list">${essays.map((e) => `
+        <div class="list-row">
+          <div class="grow click" data-essay="${attr(e.id)}"><div class="t">${esc(e.title)}</div>
+            <div class="m">${e.prompt ? esc(e.prompt.slice(0, 90)) + (e.prompt.length > 90 ? '…' : '') : 'no prompt saved'}</div></div>
+          <span class="pill ${e.status === 'final' ? 'ok' : e.status === 'idea' ? 'warn' : ''}">${esc(essayStateLabel(e.status))}</span>
+          <button class="btn sm" data-write="${attr(e.id)}">Write</button>
+        </div>`).join('')}</div>` : emptyState('No essays attached', 'Attach one you are already writing, or start a new prompt.', actBtn('Attach an essay', 'essays')),
+        { flush: essays.length > 0, actions: `<button class="btn sm" data-act="essays">Attach</button>` })}
+
+      ${panel('Interviews', ivs.length ? `<div class="list">${ivs.map((iv) => `
+        <div class="list-row click" data-iv="${attr(iv.id)}">
+          <div class="grow"><div class="t${iv.done ? ' done-text' : ''}">${esc(titleCase(iv.mode || 'interview'))}${iv.who ? ` · ${esc(iv.who)}` : ''}</div>
+            <div class="m">${esc(fmtDate(iv.date))}${iv.time ? ' · ' + esc(iv.time) : ''}</div></div>
+          <span class="pill ${iv.done ? 'ok' : dueClass(iv.date)}">${iv.done ? 'done' : esc(relDays(iv.date))}</span></div>`).join('')}</div>`
+        : emptyState('No interview yet', 'Put it here when they offer one — it lands on the calendar too.', actBtn('Add an interview', 'addiv')),
+        { flush: ivs.length > 0, actions: `<button class="btn sm" data-act="addiv">+ Interview</button>` })}
+    </div>
+
+    ${panel('Tasks for this application', tasks.length ? `<div class="list">${tasks.map((t) => `
+      <div class="list-row click" data-task="${attr(t.id)}">
+        <div class="grow"><div class="t${t.status === 'done' ? ' done-text' : ''}">${esc(t.title)}</div>
+          <div class="m">${esc((STATUSES.find((s) => s[0] === (t.status || 'todo')) || ['', ''])[1])}</div></div>
+        ${t.due ? `<span class="pill ${dueClass(t.due)}">${esc(fmtDay(t.due))}</span>` : ''}</div>`).join('')}</div>`
+      : `<p class="mini" style="margin:0">Nothing queued — anything fiddly that is not a checklist tick goes here.</p>`,
+      { flush: tasks.length > 0, actions: `<button class="btn sm" data-act="addtask">+ Task</button>` })}
+
+    ${panel('Money and notes', `<div class="list">
+      <div class="list-row"><div class="grow">Application fee</div>
+        <span class="num">${a.feeWaived ? 'waived' : esc(money(Number(a.fee) || 0, a.currency || 'USD'))}</span></div>
+      <div class="list-row"><div class="grow">Cost a year</div><span class="num">${esc(money(Number(a.cost) || 0, a.currency || 'USD'))}</span></div>
+      <div class="list-row"><div class="grow">Aid a year</div><span class="num">${esc(money(Number(a.aid) || 0, a.currency || 'USD'))}</span></div>
+      <div class="list-row"><div class="grow b">You pay a year</div><span class="num b">${esc(money(netCost(a), a.currency || 'USD'))}</span></div>
+    </div>
+    ${a.notes ? `<p class="mini" style="padding:12px 14px 0;white-space:pre-wrap">${esc(a.notes)}</p>` : ''}
+    ${a.dnotes ? `<p class="mini" style="padding:8px 14px 0;white-space:pre-wrap"><b>Decision:</b> ${esc(a.dnotes)}</p>` : ''}`, { flush: true })}`;
+
+  $('#editapp').addEventListener('click', () => appDialog(a));
+  $('#decide').addEventListener('click', () => decisionDialog(a));
+
+  const acts = {
+    addreq: () => reqDialog(a, null),
+    bulkreq: () => bulkReqDialog(a),
+    askrec: () => askRecDialog(a),
+    essays: () => attachEssaysDialog(a),
+    addiv: () => interviewDialog(a, null),
+    addtask: () => taskDialog(null, 'adm', '', a.id),
+  };
+  on('[data-act]', 'click', (e, el) => { const fn = acts[el.dataset.act]; if (fn) fn(); }, view);
+  on('[data-stage]', 'click', (e, el) => {
+    a.status = el.dataset.stage;
+    saveRender('admissions');
+    if (a.status === 'decided' && !a.outcome) decisionDialog(a);
+  }, view);
+  on('[data-req]', 'click', (e, el) => {
+    const q = (a.reqs || []).find((x) => x.id === el.dataset.req);
+    if (q) { q.done = !q.done; saveRender('admissions'); }
+  }, view);
+  on('[data-editreq]', 'click', (e, el) => {
+    const q = (a.reqs || []).find((x) => x.id === el.dataset.editreq);
+    if (q) reqDialog(a, q);
+  }, view);
+  on('[data-recnext]', 'click', (e, el) => {
+    const r = (a.recs || []).find((x) => x.recId === el.dataset.recnext);
+    if (!r) return;
+    const order = REC_STATES.map((s) => s[0]);
+    r.status = order[(order.indexOf(r.status) + 1) % order.length];
+    if (r.status === 'submitted') r.submitted = todayISO();
+    saveRender('admissions');
+  }, view);
+  on('[data-rec]', 'click', (e, el) => { const p = recById(el.dataset.rec); if (p) recDialog(p); }, view);
+  on('[data-essay]', 'click', (e, el) => { const x = essayById(el.dataset.essay); if (x) essayDialog(x); }, view);
+  on('[data-write]', 'click', (e, el) => { const x = essayById(el.dataset.write); if (x) openEssayNote(x); }, view);
+  on('[data-iv]', 'click', (e, el) => {
+    const iv = (a.interviews || []).find((x) => x.id === el.dataset.iv);
+    if (iv) interviewDialog(a, iv);
+  }, view);
+  on('[data-task]', 'click', (e, el) => { const t = taskById(el.dataset.task); if (t) taskDialog(t, 'adm'); }, view);
+}
+
+function renderEssays(view) {
+  const essays = adm().essays || [];
+  const byState = (s) => essays.filter((e) => e.status === s);
+  const soonest = (e) => {
+    const ds = appsUsingEssay(e.id).map((a) => a.deadline).filter(Boolean).sort();
+    return ds[0] || e.due || '';
+  };
+
+  topbar('Essays', { actions: `<button class="btn primary" id="newessay">+ New essay</button>` });
+
+  const card = (e) => {
+    const apps = appsUsingEssay(e.id);
+    const due = soonest(e);
+    return `<section class="goal" data-essaycard="${attr(e.id)}">
+      <div class="spread">
+        <div class="grow">
+          <div class="gtitle">${esc(e.title)}
+            <span class="pill ${e.status === 'final' ? 'ok' : e.status === 'idea' ? 'warn' : ''}">${esc(essayStateLabel(e.status))}</span>
+            ${due ? `<span class="pill ${dueClass(due)}">${esc(fmtDay(due))}</span>` : ''}</div>
+          ${e.prompt ? `<div class="mini mut" style="white-space:pre-wrap">${esc(e.prompt)}</div>` : '<div class="mini mut">No prompt saved — paste theirs in so you answer the question they asked.</div>'}
+        </div>
+        ${e.limit ? `<div class="gpct num">${esc(e.limit)}<span class="mini"> ${esc((e.unit || 'words').slice(0, 5))}</span></div>` : ''}
+      </div>
+      <div class="kmeta" style="margin-top:9px">
+        ${apps.length ? apps.map((a) => `<button class="pill accent" data-app="${attr(a.id)}">${esc(a.school)}</button>`).join('')
+          : '<span class="pill warn">not attached to anything</span>'}
+      </div>
+      <div class="wrap" style="margin-top:10px">
+        <button class="btn sm" data-write="${attr(e.id)}">${e.noteId ? 'Open draft' : 'Start drafting'}</button>
+        <button class="btn ghost sm" data-essay="${attr(e.id)}">Edit</button>
+      </div>
+    </section>`;
+  };
+
+  view.innerHTML = essays.length ? `
+    <div class="stats">
+      ${statBox(essays.length, 'essays in play', byState('final').length ? `<div class="delta up">${byState('final').length} final</div>` : '')}
+      ${statBox(byState('idea').length, 'not started')}
+      ${statBox(byState('draft').length + byState('revising').length, 'in the middle')}
+      ${statBox(essays.filter((e) => !appsUsingEssay(e.id).length).length, 'attached to nothing')}
+    </div>
+    ${ESSAY_STATES.map(([s, label]) => {
+      const list = byState(s).sort((x, y) => (soonest(x) || '9999').localeCompare(soonest(y) || '9999'));
+      return list.length ? panel(`${label} · ${list.length}`, `<div class="goals">${list.map(card).join('')}</div>`) : '';
+    }).join('')}`
+    : emptyState('No essays yet', 'Every prompt, its word limit and which applications want it — then draft in the vault.', actBtn('Add the first prompt', 'newessay'));
+
+  $('#newessay').addEventListener('click', () => essayDialog(null));
+  on('[data-act=newessay]', 'click', () => essayDialog(null), view);
+  on('[data-write]', 'click', (e, el) => { const x = essayById(el.dataset.write); if (x) openEssayNote(x); }, view);
+  on('[data-essay]', 'click', (e, el) => { const x = essayById(el.dataset.essay); if (x) essayDialog(x); }, view);
+  on('[data-app]', 'click', (e, el) => go(`adm/applications/${el.dataset.app}`), view);
+}
+PAGES['adm/essays'] = renderEssays;
+
+function renderRecommenders(view) {
+  const people = adm().recommenders || [];
+  const all = allApps().flatMap((a) => (a.recs || []).map((r) => ({ ...r, app: a })));
+  const waiting = all.filter((r) => r.status !== 'submitted');
+
+  topbar('Recommenders', { actions: `<button class="btn primary" id="newrec">+ New recommender</button>` });
+
+  view.innerHTML = people.length ? `
+    <div class="stats">
+      ${statBox(people.length, 'people asked')}
+      ${statBox(all.length, 'letters wanted')}
+      ${statBox(all.filter((r) => r.status === 'submitted').length, 'letters in')}
+      ${statBox(waiting.length, 'still waiting', waiting.length ? `<div class="delta flat">nudge them</div>` : '')}
+    </div>
+    <div class="grid g2">${people.map((p) => {
+      const mine = appsForRec(p.id);
+      return panel(p.name, `
+        <div class="mini mut">${esc([p.role, p.org].filter(Boolean).join(' · ') || 'recommender')}</div>
+        ${p.known ? `<p class="mini" style="margin:8px 0 0">${esc(p.known)}</p>` : ''}
+        <div class="wrap" style="margin-top:10px">
+          ${p.email ? `<a class="pill" href="mailto:${attr(p.email)}">${esc(p.email)}</a>` : ''}
+          ${p.phone ? `<a class="pill" href="tel:${attr(p.phone)}">${esc(p.phone)}</a>` : ''}
+        </div>
+        ${mine.length ? `<div class="list" style="margin-top:10px">${mine.map((a) => {
+          const r = (a.recs || []).find((x) => x.recId === p.id) || {};
+          const st = REC_STATES.find((s) => s[0] === r.status) || ['asked', 'Asked'];
+          return `<div class="list-row click" data-app="${attr(a.id)}">
+            <div class="grow"><div class="t">${esc(appTitle(a))}</div>
+              <div class="m">${a.deadline ? esc(fmtDay(a.deadline)) : 'no deadline'}${r.asked ? ` · asked ${esc(fmtDate(r.asked))}` : ''}</div></div>
+            <span class="pill ${r.status === 'submitted' ? 'ok' : 'warn'}">${esc(st[1])}</span></div>`;
+        }).join('')}</div>` : '<p class="mini" style="margin:10px 0 0">Not writing for anything yet — add them from an application.</p>'}
+        ${p.notes ? `<p class="mini mut" style="margin:10px 0 0;white-space:pre-wrap">${esc(p.notes)}</p>` : ''}
+        <div class="wrap" style="margin-top:10px"><button class="btn ghost sm" data-rec="${attr(p.id)}">Edit</button></div>`,
+        { sub: `${mine.length} application${mine.length === 1 ? '' : 's'}` });
+    }).join('')}</div>`
+    : emptyState('Nobody asked yet', 'Keep the people writing for you here — who they are, how to reach them, and which letters are still out.', actBtn('Add a recommender', 'newrec'));
+
+  $('#newrec').addEventListener('click', () => recDialog(null));
+  on('[data-act=newrec]', 'click', () => recDialog(null), view);
+  on('[data-rec]', 'click', (e, el) => { const p = recById(el.dataset.rec); if (p) recDialog(p); }, view);
+  on('[data-app]', 'click', (e, el) => go(`adm/applications/${el.dataset.app}`), view);
+}
+PAGES['adm/recommenders'] = renderRecommenders;
+
+function renderTests(view) {
+  const tests = [...(adm().tests || [])].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const scored = tests.filter((t) => t.score);
+  const ahead = tests.filter((t) => t.date && daysUntil(t.date) >= 0 && !t.score);
+  const nextT = ahead.sort((a, b) => a.date.localeCompare(b.date))[0];
+  const expiring = scored.filter((t) => t.expires && daysUntil(t.expires) < 365);
+
+  topbar('Tests & scores', { actions: `<button class="btn primary" id="newtest">+ Add a test</button>` });
+
+  view.innerHTML = tests.length ? `
+    <div class="stats">
+      ${statBox(scored.length, 'scores on file')}
+      ${statBox(ahead.length, 'booked or planned', nextT ? `<div class="delta flat">next ${esc(fmtDay(nextT.date))}</div>` : '')}
+      ${statBox(nextT ? daysUntil(nextT.date) : '—', 'days to the next sitting', nextT ? `<div class="delta flat">${esc(nextT.name)}</div>` : '')}
+      ${statBox(expiring.length, 'expiring within a year')}
+    </div>
+
+    ${panel('Scores', scored.length ? `<div class="list">${scored.map((t) => `
+      <div class="list-row click" data-test="${attr(t.id)}">
+        <div class="grow"><div class="t">${esc(t.name)}${t.target && Number(t.score) >= Number(t.target) ? ' <span class="pill ok">target met</span>' : ''}</div>
+          <div class="m">${esc(fmtDate(t.date))}${(t.subs || []).length ? ' · ' + (t.subs || []).map((s) => `${esc(s.label)} ${esc(s.score)}`).join(' · ') : ''}${t.expires ? ` · valid to ${esc(fmtDate(t.expires))}` : ''}</div></div>
+        <span class="num b">${esc(t.score)}</span></div>`).join('')}</div>`
+      : `<p class="mini" style="margin:0">No scores yet — add one as soon as it comes back.</p>`, { flush: scored.length > 0 })}
+
+    ${ahead.length ? panel('Coming up', `<div class="list">${ahead.map((t) => `
+      <div class="list-row click" data-test="${attr(t.id)}">
+        <div class="grow"><div class="t">${esc(t.name)}</div>
+          <div class="m">${esc((TEST_STATES.find((s) => s[0] === t.status) || ['', t.status])[1])}${t.target ? ` · aiming for ${esc(t.target)}` : ''}${t.cost ? ` · ${esc(money(Number(t.cost) || 0, t.currency || 'USD'))}` : ''}</div></div>
+        <span class="pill ${dueClass(t.date)}">${esc(fmtDay(t.date))}</span></div>`).join('')}</div>`, { flush: true }) : ''}
+
+    ${expiring.length ? panel('Watch the expiry', `<div class="list">${expiring.map((t) => `
+      <div class="list-row click" data-test="${attr(t.id)}">
+        <div class="grow"><div class="t">${esc(t.name)} · ${esc(t.score)}</div>
+          <div class="m">most universities want a score under two years old</div></div>
+        <span class="pill ${dueClass(t.expires)}">${esc(fmtDate(t.expires))}</span></div>`).join('')}</div>`, { flush: true }) : ''}`
+    : emptyState('No tests yet', 'IELTS, SAT, whatever they ask for — the date, the score, and when it stops counting.', actBtn('Add a test', 'newtest'));
+
+  $('#newtest').addEventListener('click', () => testDialog(null));
+  on('[data-act=newtest]', 'click', () => testDialog(null), view);
+  on('[data-test]', 'click', (e, el) => { const t = (adm().tests || []).find((x) => x.id === el.dataset.test); if (t) testDialog(t); }, view);
+}
+PAGES['adm/tests'] = renderTests;
+PAGES['adm/tasks'] = renderTasks;
 /* ------------------------------------------------------------------- init */
 window.addEventListener('DOMContentLoaded', boot);
 let resizeTimer;
@@ -5155,6 +6227,7 @@ function paletteItems() {
   // actions first — they are what you reach for mid-thought
   add('action', 'New task · work', 'Kanban card on the work face', () => taskDialog(null, 'work'), 5);
   add('action', 'New task · university', 'Kanban card on the CAU face', () => taskDialog(null, 'uni'), 5);
+  add('action', 'New application', 'A university or a scholarship', () => appDialog(null), 5);
   add('action', 'Quick note', 'One textarea, files into the vault', quickNoteDialog, 5);
   add('action', 'Add transaction', 'Money in or out', () => { go('shared/finances'); setTimeout(() => txDialog(null), 60); }, 5);
   add('action', 'Tick a habit', 'Today\u2019s baseline', () => go('shared/today'), 5);
@@ -5164,22 +6237,28 @@ function paletteItems() {
   add('action', 'Daily note', 'Today\u2019s page in the vault', openDailyNote, 4);
   add('action', 'Log sleep or weight', 'Today\u2019s row in the health log', () => healthDialog(healthOn(todayISO())), 4);
   add('action', 'New savings goal', 'A pot with a target', () => { go('shared/finances'); setTimeout(() => savingsDialog(null), 60); }, 4);
+  add('action', 'New essay', 'A prompt you have to answer', () => essayDialog(null), 4);
+  add('action', 'New recommender', 'Someone writing you a letter', () => recDialog(null), 4);
+  add('action', 'Add a test score', 'IELTS, SAT, whatever they ask for', () => testDialog(null), 4);
   add('action', 'Log a 1-1', 'Open a teacher journal', () => go('work/teachers'), 4);
   add('action', 'Upload a CSV', 'Exam export or the quality survey', () => go('work/reports'), 4);
 
   // pages
   Object.entries(NAV).forEach(([face, pages]) => pages.forEach((p) => {
-    const where = face === 'work' ? 'SATashkent' : face === 'uni' ? 'CAU' : 'Everywhere';
+    const where = face === 'shared' ? 'Everywhere' : faceName(face);
     add('page', p.label, where, () => go(`${face}/${p.id}`), 3);
   }));
 
   // the things themselves
   DB.teachers.forEach((t) => add('teacher', t.name, t.left ? 'former teacher' : (t.teaches || 'teacher'), () => go(`work/teachers/${t.id}`), 2));
   DB.tasks.filter((t) => t.status !== 'done').forEach((t) =>
-    add('task', t.title, `${t.face === 'work' ? 'work' : 'CAU'} task${t.due ? ' · ' + relDays(t.due) : ''}`, () => taskDialog(t, t.face), 2));
+    add('task', t.title, `${faceName(t.face)} task${t.due ? ' · ' + relDays(t.due) : ''}`, () => taskDialog(t, t.face), 2));
   goalItems().forEach((g) => add('goal', g.title, `${g.horizon} goal · ${goalProgress(g).pct}%`, () => { go('shared/goals'); setTimeout(() => goalDialog(g), 60); }, 2));
   habitItems().forEach((h) => add('habit', h.name, h.cadence === 'weekly' ? `${Number(h.target) || 1}× a week` : 'daily habit', () => go('shared/habits'), 2));
   (DB.uni.courses || []).forEach((c) => add('course', c.name, c.code || 'course', () => go(`uni/courses/${c.id}`), 2));
+  allApps().forEach((a) => add('app', appTitle(a), `${stageLabel(a.status)}${a.deadline ? ' · ' + relDays(a.deadline) : ''}`, () => go(`adm/applications/${a.id}`), 2));
+  (DB.admissions.essays || []).forEach((e) => add('essay', e.title, `${essayStateLabel(e.status)} essay`, () => { go('adm/essays'); setTimeout(() => essayDialog(e), 60); }, 2));
+  (DB.admissions.recommenders || []).forEach((p) => add('rec', p.name, [p.role, p.org].filter(Boolean).join(' · ') || 'recommender', () => go('adm/recommenders'), 1));
   DB.notes.forEach((n) => add('note', n.title, n.path || 'vault root', () => go(`shared/notes/${n.id}`), 1));
   DB.datasets.forEach((d) => add('report', d.name, `${d.kind} · ${d.rows.length} rows`, () => go(`work/reports/${d.id}`), 1));
 
@@ -5202,7 +6281,7 @@ function fuzzyScore(needle, hay) {
   return i === n.length ? score * 0.4 : -1;
 }
 
-const KIND_ICON = { action: '⌁', page: '◇', teacher: '☺', task: '▤', course: '❐', note: '✦', report: '▦', goal: '◎', habit: '✓' };
+const KIND_ICON = { action: '⌁', page: '◇', teacher: '☺', task: '▤', course: '❐', note: '✦', report: '▦', goal: '◎', habit: '✓', app: '⌸', essay: '✑', rec: '☏' };
 
 let paletteOpen = false;
 function openPalette(prefill = '') {

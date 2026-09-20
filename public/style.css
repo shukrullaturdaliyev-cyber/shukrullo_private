@@ -1,6 +1,6 @@
 /* ==========================================================================
    umarkin's personal zettelkasten — design system
-   Dark only. Three themes via <html data-theme="work|uni|notes">.
+   Dark only. Four themes via <html data-theme="work|uni|adm|notes">.
    ========================================================================== */
 
 :root {
@@ -39,6 +39,17 @@ html[data-theme="uni"] {
   --line-2: #274468;
   --accent: #2cc48a;
   --accent-ink: #06231a;
+}
+
+html[data-theme="adm"] {
+  --bg: #17141f;
+  --s1: #1d1929;
+  --s2: #241f33;
+  --s3: #2c2640;
+  --line: #2a2440;
+  --line-2: #3a3256;
+  --accent: #8b7cf6;
+  --accent-ink: #fff;
 }
 
 html[data-theme="notes"] {
@@ -134,6 +145,7 @@ input[type="checkbox"] { width: auto; accent-color: var(--accent); }
   padding: 5px 11px; border-radius: 6px; cursor: pointer;
 }
 .seg button[aria-pressed="true"] { background: var(--s3); color: var(--tx); }
+.seg-3 button { padding: 5px 7px; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 5px;
@@ -693,3 +705,64 @@ dialog.palette {
 .goal .gtitle { font-size: 14.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .goal .gpct { font-size: 20px; font-weight: 600; flex: 0 0 auto; padding-left: 12px; }
 .goal .list { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-ctl); overflow: hidden; }
+
+/* ---------- admissions ---------- */
+.pipe {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: start;
+}
+.pipecol > header {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 0 2px 7px; border-bottom: 1px solid var(--line); margin-bottom: 8px;
+}
+.pipecol > header h4 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--tx-3);
+  font-weight: 600; margin: 0;
+}
+.pipecard {
+  display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
+  font: inherit; color: var(--tx); cursor: pointer; margin-bottom: 8px;
+  background: var(--s2); border: 1px solid var(--line); border-radius: var(--r-ctl);
+  padding: 9px 10px;
+}
+.pipecard:hover { border-color: var(--accent); }
+.pipecard .pt { font-size: 13px; font-weight: 600; }
+.pipecard .wrap { gap: 5px; }
+
+.stepper { display: flex; flex-wrap: wrap; gap: 8px; }
+.step {
+  display: inline-flex; align-items: center; gap: 7px; font: inherit; font-size: 12.5px;
+  background: var(--s2); border: 1px solid var(--line); border-radius: 999px;
+  color: var(--tx-3); padding: 5px 13px 5px 6px; cursor: pointer;
+}
+.step:hover { border-color: var(--line-2); color: var(--tx-2); }
+.step .sn {
+  width: 19px; height: 19px; border-radius: 999px; background: var(--s3);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 11px;
+}
+.step.on { color: var(--tx); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.step.on .sn { background: var(--accent); color: var(--accent-ink); }
+.step.now { background: color-mix(in srgb, var(--accent) 14%, var(--s2)); border-color: var(--accent); }
+
+/* a checklist tick that is a button, not a checkbox, so it can be sized */
+.tick {
+  flex: 0 0 auto; width: 21px; height: 21px; border-radius: 6px; cursor: pointer;
+  background: var(--s2); border: 1px solid var(--line-2); color: var(--ok);
+  font: inherit; font-size: 12px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.tick:hover { border-color: var(--accent); }
+.tick.on { background: color-mix(in srgb, var(--ok) 18%, var(--s2)); border-color: var(--ok); }
+
+.admbarwrap { flex: 0 0 76px; }
+.admbarwrap .bar { width: 76px; }
+
+@media (max-width: 1100px) {
+  .pipe { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .pipe { grid-template-columns: 1fr; }
+  .admbarwrap { display: none; }
+  .stepper { gap: 6px; }
+  .step { padding: 4px 10px 4px 5px; font-size: 12px; }
+}

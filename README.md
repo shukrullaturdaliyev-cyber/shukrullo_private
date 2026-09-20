@@ -1,11 +1,13 @@
 # Shukrullo's personal zettelkasten
 
-A private, single-user operations dashboard with two faces and a set of shared modules.
+A private, single-user operations dashboard with three faces and a set of shared modules.
 
 * **Work** — head of the English department at an SAT-prep school: overview, teacher 1-1 journals, tasks, CSV report engines.
-* **University** (Central Asian University) — overview, timetable, courses, tasks, lecture notes (*Konspekty*).
-* **Everywhere** — a Today page across both faces, a native calendar with two-way Google sync, habits, goals and the
-  weekly review, an Obsidian-style note vault, a health log, finances, settings.
+* **CAU** (Central Asian University) — overview, timetable, courses, tasks, lecture notes (*Konspekty*).
+* **Apply** — the admissions cycle: universities and scholarships, requirement checklists, essays, recommenders,
+  tests and scores, its own task board.
+* **Everywhere** — a Today page across all three faces, a native calendar with two-way Google sync, habits, goals and
+  the weekly review, an Obsidian-style note vault, a health log, finances, settings.
 
 One user, one passphrase. The app itself is static; data lives in a Cloudflare KV namespace and is
 mirrored into `localStorage` so nothing is ever lost when the network is not there.
@@ -16,7 +18,7 @@ mirrored into `localStorage` so nothing is ever lost when the network is not the
 
 ```
 public/index.html          the whole shell
-public/style.css           the design system (dark only, three themes)
+public/style.css           the design system (dark only, four themes)
 public/app.js              the entire app — routing, modules, engines
 public/vendor/             Chart.js 4, PapaParse 5, marked, lz-string,
                            React 18 + ReactDOM UMD, Excalidraw 0.17.6 + excalidraw-assets/
@@ -190,6 +192,34 @@ lights-out and waking rather than a number of hours, so 23:40 → 06:15 reads as
 negative across midnight; nights under six hours are marked short. Charts for hours a night over 30 days and
 weight over the last 90 readings. Logging a day that already exists fills its gaps rather than replacing it.
 
+### Admissions
+
+One row per university or scholarship, each carrying everything that application needs.
+
+* **The application** — kind, programme, level, country, round (ED/ED2/EA/REA/RD/rolling), deadline, decision date,
+  portal link, fee, cost a year and aid a year. Net cost is cost minus aid, so offers can be compared on what you
+  would actually pay.
+* **Stage** — researching → preparing → submitted → interview → decided, moved by clicking the stepper. Reaching
+  *decided* with no answer recorded opens the decision dialog; that stores the outcome, the aid offered and the
+  reply-by date.
+* **Checklist** — a new application starts with the usual list for its kind (transcript, personal statement, letters,
+  English test, passport, CV, financial documents, fee), each item tickable, datable and annotatable. **Paste list**
+  takes a requirements page straight off a university site, one per line, strips bullets and numbering, and skips
+  anything already on the checklist.
+* **Essays** — one essay can serve several applications and counts on all of them. Each keeps the prompt in the
+  university's own words, the limit in words or characters, and a status (idea → draft → revising → final).
+  **Write** creates the draft as a note under `Admissions/Essays` and opens the vault writer on it.
+* **Recommenders** — the people writing for you, with role, organisation and contact. Per application a letter moves
+  asked → agreed → submitted with one click, and the recommenders page shows who is still owed on what.
+* **Tests** — IELTS, SAT and the rest: sitting date, status, score against target, section scores, fee, and the date
+  the score stops counting. Scores expiring within a year are called out.
+* **Interviews and tasks** — an interview has a date, time, mode and notes; a task on the *Apply* board can be tied to
+  one application and shows on its page.
+
+Nothing is silent: the overview lists a passed deadline as late, and within three weeks of one it names outstanding
+requirements, letters not yet in, essays still in draft and fees not yet paid. Deadlines, decision dates, reply-by
+dates and interviews all reach the Today page and the calendar.
+
 ### The vault
 
 Folder tree with persisted collapse state, search across title/path/tags, a Move dialog with folder
@@ -217,7 +247,8 @@ so the money stays on the books, leaves the spending total, and lands where a sa
 Day, week and month views drawn by the app: lane-packed overlapping events, a red now-line scrolled into
 view, an all-day row, and `+N more` in month cells jumping to that day. Five kinds of source are merged —
 timetable (expanded per week and limited to the semester dates), exams, deadlines (task *and* step due
-dates), logged 1-1s, and every Google calendar in its own colour. Legend chips toggle each source and the
+dates, on every face), admissions dates (deadlines, decisions, reply-by dates and interviews), logged 1-1s,
+and every Google calendar in its own colour. Legend chips toggle each source and the
 hidden set persists. Clicking an empty slot opens *New event* with a destination: any Google calendar you
 can write to, or "Desk · task deadline" which creates a task instead.
 
