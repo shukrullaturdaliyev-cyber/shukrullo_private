@@ -276,7 +276,7 @@ const DEFAULTS = () => ({
   notes: [],
   teachers: [],
   tasks: [],
-  uni: { courses: [], slots: [] },
+  uni: { courses: [], slots: [], folders: [], files: [] },
   finances: { tx: [], budgets: {}, goals: [] },
   datasets: [],
   habits: { items: [], ticks: {} },
@@ -376,7 +376,8 @@ async function loadAll() {
   if (!Array.isArray(DB.teachers)) DB.teachers = [];
   if (!Array.isArray(DB.tasks)) DB.tasks = [];
   if (!Array.isArray(DB.datasets)) DB.datasets = [];
-  DB.uni = Object.assign({ courses: [], slots: [] }, DB.uni || {});
+  DB.uni = Object.assign({ courses: [], slots: [], folders: [], files: [] }, DB.uni || {});
+  ['courses', 'slots', 'folders', 'files'].forEach((k) => { if (!Array.isArray(DB.uni[k])) DB.uni[k] = []; });
   DB.finances = Object.assign({ tx: [], budgets: {}, accounts: [], goals: [] }, DB.finances || {});
   DB.habits = Object.assign({ items: [], ticks: {} }, DB.habits || {});
   if (!Array.isArray(DB.habits.items)) DB.habits.items = [];
@@ -2530,7 +2531,12 @@ function courseDialog(existing) {
       const del = $('#delcourse', dlg);
       if (del) del.addEventListener('click', () => {
         close();
-        confirmDialog('Delete course', `“${c.name}” and its timetable slots will be removed. Tasks keep their text but lose the course tag.`, () => {
+        const held = courseFiles(c.id);
+        confirmDialog('Delete course',
+          `“${c.name}” and its timetable slots will be removed${held.length ? `, along with ${held.length} file${held.length === 1 ? '' : 's'} on its shelf` : ''}. Tasks keep their text but lose the course tag.`, () => {
+          held.forEach((f) => { if (f.kind === 'file') deleteFileData(f.id); });
+          DB.uni.files = uniFiles().filter((f) => f.courseId !== c.id);
+          DB.uni.folders = uniFolders().filter((f) => f.courseId !== c.id);
           DB.uni.courses = DB.uni.courses.filter((x) => x.id !== c.id);
           DB.uni.slots = DB.uni.slots.filter((s) => s.courseId !== c.id);
           DB.tasks.forEach((t) => { if (t.course === c.id) t.course = ''; });
@@ -2541,7 +2547,7 @@ function courseDialog(existing) {
     onSubmit: (d) => {
       if (!d.name.trim()) return false;
       Object.assign(c, { name: d.name.trim(), code: d.code.trim(), credits: d.credits.trim(), instructor: d.instructor.trim() });
-      if (!existing) { c.exams = []; DB.uni.courses.push(c); }
+      if (!existing) { c.exams = []; DB.uni.courses.push(c); seedFolders(c.id); }
       saveRender('uni');
     },
   });
@@ -2564,6 +2570,7 @@ function renderCourses(view, r) {
         <div class="wrap" style="margin-top:10px">
           ${c.credits ? `<span class="mini num">${esc(c.credits)} credits</span>` : ''}
           <span class="mini num">${hours} h/week</span>
+          ${courseFiles(c.id).length ? `<span class="pill">${courseFiles(c.id).length} file${courseFiles(c.id).length === 1 ? '' : 's'}</span>` : ''}
           ${ex ? `<span class="pill ${dueClass(ex.date)}">exam ${esc(relDays(ex.date))}</span>` : ''}
         </div>
       </div></section>`;
@@ -2591,6 +2598,9 @@ function renderCoursePage(view, r) {
   const tasks = DB.tasks.filter((t) => t.face === 'uni' && t.course === c.id && t.status !== 'done');
   const steps = tasks.flatMap((t) => (t.steps || []).filter((s) => !s.done && s.due).map((s) => ({ label: `${t.title} › ${s.text}`, due: s.due, id: t.id })));
   const konspekty = courseNotes(c);
+  const fid = r.rest[0] || '';
+  const shelf = courseFiles(c.id);
+  const shelfBytes = sum(shelf.filter((f) => f.kind === 'file').map((f) => Number(f.size) || 0));
 
   topbar(c.name, {
     crumb: `<a href="${href('uni/courses')}">Courses</a> · ${esc(c.code || 'no code')}${c.instructor ? ' · ' + esc(c.instructor) : ''}`,
@@ -2602,7 +2612,7 @@ function renderCoursePage(view, r) {
       ${statBox(upcoming ? `${DAYS6[upcoming.day]} ${upcoming.start}` : '—', 'next class', upcoming ? `<div class="delta flat">${esc(titleCase(upcoming.type))}${upcoming.room ? ' · ' + esc(upcoming.room) : ''}</div>` : '')}
       ${statBox(ex ? daysUntil(ex.date) : '—', 'days to next exam')}
       ${statBox(tasks.length, 'open tasks')}
-      ${statBox(konspekty.length, 'konspekty')}
+      ${statBox(shelf.length, 'files on the shelf', shelfBytes ? `<div class="delta flat">${esc(fileSize(shelfBytes))}</div>` : '')}
     </div>
     <div class="grid g-side">
       ${panel('Schedule', slots.length ? SLOT_TYPES.filter(([t]) => slots.some((s) => s.type === t)).map(([t, label]) => `
@@ -2630,7 +2640,17 @@ function renderCoursePage(view, r) {
         <div class="list-row click" data-note="${attr(n.id)}"><div class="grow"><div class="t trunc">${esc(n.title)}</div>
         <div class="m trunc">${esc(n.path || 'vault root')}</div></div><span class="m">${esc(n.updated ? fmtDay(n.updated) : '')}</span></div>`).join('')}</div>`
         : emptyState('No matching notes', `Any vault note whose title or folder mentions “${esc(c.code || c.name)}” shows up here.`), { flush: true })}
-    </div>`;
+    </div>
+
+    ${panel('Files', coursefilesHTML(c, fid), {
+      sub: shelf.length ? `${shelf.length} item${shelf.length === 1 ? '' : 's'}${shelfBytes ? ` · ${fileSize(shelfBytes)} stored` : ''}` : 'Syllabus, slides, problem sets — drop them straight in',
+      flush: true,
+      actions: `<button class="btn sm" data-act="upload">Upload</button>
+        <button class="btn sm ghost" data-act="newfolder">+ Folder</button>
+        <button class="btn sm ghost" data-act="newlink">+ Link</button>
+        ${courseFolders(c.id).length ? `<button class="btn sm ghost" data-act="movehere">Move</button>`
+          : `<button class="btn sm ghost" data-act="seed">Add the usual folders</button>`}`,
+    })}`;
 
   $('#editcourse').addEventListener('click', () => courseDialog(c));
   $('#addtask').addEventListener('click', () => taskDialog(null, 'uni', c.id));
@@ -2651,6 +2671,7 @@ function renderCoursePage(view, r) {
   }, view);
   on('[data-open-task]', 'click', (e, el) => { const t = taskById(el.dataset.openTask); if (t) taskDialog(t, 'uni'); }, view);
   on('[data-note]', 'click', (e, el) => go(`uni/konspekty/${el.dataset.note}`), view);
+  wireCourseFiles(view, c, fid);
 }
 
 /** Vault notes whose path or title mentions the course code or name. */
@@ -2663,6 +2684,418 @@ function courseNotes(c) {
   }).sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || '')));
 }
 
+
+/* ---- course files: folders, uploads, links ----------------------------------
+   Metadata lives in DB.uni; the bytes of an upload live in their own KV key, so
+   adding a 4 MB lecture deck never makes every later save carry it.           */
+
+const FILE_MAX = 8 * 1024 * 1024;        // ~11 MB once base64'd — the PUT cap is 20
+const FILE_LS_MAX = 700 * 1024;          // bigger than this is not worth the 5 MB quota
+const DEFAULT_FOLDERS = ['Syllabus', 'Lectures', 'Seminars', 'Assignments', 'Readings', 'Exams'];
+
+const uniFolders = () => DB.uni.folders || (DB.uni.folders = []);
+const uniFiles = () => DB.uni.files || (DB.uni.files = []);
+const folderById = (id) => uniFolders().find((f) => f.id === id);
+const fileById = (id) => uniFiles().find((f) => f.id === id);
+const courseFolders = (cid) => uniFolders().filter((f) => f.courseId === cid);
+const courseFiles = (cid) => uniFiles().filter((f) => f.courseId === cid);
+const childFolders = (cid, parent) => courseFolders(cid).filter((f) => (f.parent || '') === (parent || ''))
+  .sort((a, b) => a.name.localeCompare(b.name));
+const filesIn = (cid, fid) => courseFiles(cid).filter((f) => (f.folderId || '') === (fid || ''))
+  .sort((a, b) => a.name.localeCompare(b.name));
+
+/** Root-first chain of folders down to `id`, for the breadcrumb. */
+function folderPath(id) {
+  const out = [];
+  let cur = folderById(id);
+  const seen = new Set();
+  while (cur && !seen.has(cur.id)) { seen.add(cur.id); out.unshift(cur); cur = folderById(cur.parent); }
+  return out;
+}
+/** Everything under a folder, however deep. */
+function folderContents(cid, fid) {
+  const folders = [], files = [];
+  const walk = (parent) => {
+    childFolders(cid, parent).forEach((f) => { folders.push(f); walk(f.id); });
+    files.push(...filesIn(cid, parent));
+  };
+  walk(fid);
+  return { folders, files };
+}
+/** A folder cannot be moved inside itself, however many levels down. */
+const isDescendant = (id, maybeParent) => folderPath(id).some((f) => f.id === maybeParent) && id !== maybeParent;
+
+function seedFolders(cid) {
+  const have = new Set(childFolders(cid, '').map((f) => norm(f.name)));
+  DEFAULT_FOLDERS.filter((n) => !have.has(norm(n)))
+    .forEach((name) => uniFolders().push({ id: uid(), courseId: cid, name, parent: '', created: todayISO() }));
+  save('uni');
+}
+
+const fileSize = (n) => {
+  const v = Number(n) || 0;
+  if (v < 1024) return `${v} B`;
+  if (v < 1024 * 1024) return `${Math.round(v / 1024)} KB`;
+  return `${round(v / (1024 * 1024), 1)} MB`;
+};
+const extOf = (name) => (/\.([a-z0-9]{1,5})$/i.exec(String(name || '')) || ['', ''])[1].toLowerCase();
+const FILE_TAGS = {
+  pdf: 'PDF', doc: 'DOC', docx: 'DOC', odt: 'DOC', rtf: 'DOC',
+  xls: 'XLS', xlsx: 'XLS', csv: 'CSV', tsv: 'CSV',
+  ppt: 'PPT', pptx: 'PPT', key: 'PPT',
+  png: 'IMG', jpg: 'IMG', jpeg: 'IMG', gif: 'IMG', webp: 'IMG', svg: 'IMG', heic: 'IMG',
+  zip: 'ZIP', rar: 'ZIP', '7z': 'ZIP', tar: 'ZIP', gz: 'ZIP',
+  mp3: 'AUD', m4a: 'AUD', wav: 'AUD', mp4: 'VID', mov: 'VID', mkv: 'VID',
+  txt: 'TXT', md: 'TXT', tex: 'TEX', ipynb: 'NB', py: 'PY', c: 'C', cpp: 'C', java: 'JAVA',
+};
+function fileTag(f) {
+  if (f.kind === 'link') return '↗';
+  if (f.kind === 'note') return '✦';
+  return FILE_TAGS[extOf(f.name)] || 'FILE';
+}
+const isImage = (f) => f.kind === 'file' && /^image\//.test(f.mime || '');
+const isPDF = (f) => f.kind === 'file' && (/pdf/.test(f.mime || '') || extOf(f.name) === 'pdf');
+
+/* the bytes themselves — same per-key trick the note bodies use */
+const fileCache = new Map();
+async function loadFileData(id) {
+  if (fileCache.has(id)) return fileCache.get(id);
+  let rec = null;
+  try { const raw = localStorage.getItem(LS + 'f_' + id); if (raw != null) rec = JSON.parse(raw); } catch { /* ignore */ }
+  if (!rec && REMOTE) {
+    try { const remote = await api('/data/f_' + id); if (remote && remote.d) rec = remote; } catch { /* offline */ }
+  }
+  if (rec) fileCache.set(id, rec);
+  return rec;
+}
+async function putFileData(id, rec) {
+  fileCache.set(id, rec);
+  if (JSON.stringify(rec).length < FILE_LS_MAX) {
+    try { localStorage.setItem(LS + 'f_' + id, JSON.stringify(rec)); } catch { /* quota */ }
+  }
+  if (!REMOTE) return;
+  setSync('saving');
+  try { await api('/data/f_' + id, { method: 'PUT', body: JSON.stringify(rec) }); setSync('synced'); }
+  catch (err) { setSync('error', String(err.message || err)); throw err; }
+}
+function deleteFileData(id) {
+  fileCache.delete(id);
+  localStorage.removeItem(LS + 'f_' + id);
+  if (REMOTE) api('/data/f_' + id, { method: 'DELETE' }).catch(() => {});
+}
+
+const b64ToBlob = (b64, mime) => {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime || 'application/octet-stream' });
+};
+const readAsBase64 = (file) => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve(String(r.result).split(',')[1] || '');
+  r.onerror = () => reject(new Error('could not read ' + file.name));
+  r.readAsDataURL(file);
+});
+
+/** Take a FileList onto a course folder, one key per file. */
+async function uploadCourseFiles(cid, folderId, list) {
+  const files = [...list];
+  if (!files.length) return;
+  const tooBig = files.filter((f) => f.size > FILE_MAX);
+  const ok = files.filter((f) => f.size <= FILE_MAX);
+  if (tooBig.length) toast(`${tooBig.map((f) => f.name).join(', ')} — over ${fileSize(FILE_MAX)}, keep those as a link.`, 'bad');
+  if (!ok.length) return;
+  let saved = 0;
+  for (const file of ok) {
+    try {
+      const d = await readAsBase64(file);
+      const rec = { id: uid(), courseId: cid, folderId: folderId || '', kind: 'file',
+        name: file.name, mime: file.type || '', size: file.size, note: '', added: todayISO() };
+      await putFileData(rec.id, { n: file.name, m: file.type || '', d });
+      uniFiles().push(rec);
+      saved++;
+    } catch (err) {
+      toast(`${file.name} did not save — ${err.message || err}`, 'bad');
+    }
+  }
+  if (saved) { save('uni'); render(); toast(`${saved} file${saved === 1 ? '' : 's'} added`); }
+}
+
+async function openCourseFile(f) {
+  if (f.kind === 'link') { window.open(f.url, '_blank', 'noopener'); return; }
+  if (f.kind === 'note') { go(`uni/konspekty/${f.noteId}`); return; }
+  const rec = await loadFileData(f.id);
+  if (!rec || !rec.d) { toast('The contents of that file are not on this device and could not be fetched.', 'bad'); return; }
+  const blob = b64ToBlob(rec.d, rec.m || f.mime);
+  const url = URL.createObjectURL(blob);
+  const revoke = () => setTimeout(() => URL.revokeObjectURL(url), 30000);
+  if (isImage(f) || isPDF(f)) {
+    openDialog({
+      title: f.name,
+      wide: true,
+      submitLabel: '',
+      body: isImage(f)
+        ? `<img src="${attr(url)}" alt="${attr(f.name)}" style="max-width:100%;border-radius:var(--r-ctl);display:block;margin:0 auto">`
+        : `<iframe src="${attr(url)}" title="${attr(f.name)}" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:var(--r-ctl);background:#fff"></iframe>`,
+      extraFooter: `<button type="button" class="btn left" id="dlfile">Download</button>`,
+      onOpen: (dlg, close) => {
+        $('#dlfile', dlg).addEventListener('click', () => {
+          const a = document.createElement('a');
+          a.href = url; a.download = f.name; a.click();
+        });
+        dlg.addEventListener('close', revoke);
+      },
+    });
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = url; a.download = f.name; a.click();
+  revoke();
+}
+
+/* ---- dialogs ---- */
+
+function folderDialog(cid, parent, existing) {
+  const f = existing || { id: uid(), courseId: cid, name: '', parent: parent || '', created: todayISO() };
+  const others = courseFolders(cid).filter((x) => x.id !== f.id && !isDescendant(x.id, f.id));
+  openDialog({
+    title: existing ? 'Rename folder' : 'New folder',
+    body: `<label class="f"><span>Name</span><input name="name" value="${attr(f.name)}" placeholder="Week 3, Problem sets…"></label>
+      ${existing ? `<label class="f"><span>Inside</span><select name="parent">
+        <option value="">— top level —</option>
+        ${others.map((x) => `<option value="${attr(x.id)}"${f.parent === x.id ? ' selected' : ''}>${esc(folderPath(x.id).map((p) => p.name).join(' / '))}</option>`).join('')}
+      </select></label>` : ''}`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delfolder">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delfolder', dlg);
+      if (del) del.addEventListener('click', () => {
+        const inner = folderContents(cid, f.id);
+        close();
+        confirmDialog('Delete folder',
+          `“${f.name}” goes${inner.files.length || inner.folders.length ? `, with ${inner.folders.length} folder${inner.folders.length === 1 ? '' : 's'} and ${inner.files.length} file${inner.files.length === 1 ? '' : 's'} inside` : ' — it is empty'}.`, () => {
+            inner.files.forEach((x) => { if (x.kind === 'file') deleteFileData(x.id); });
+            const gone = new Set([f.id, ...inner.folders.map((x) => x.id)]);
+            DB.uni.files = uniFiles().filter((x) => !gone.has(x.folderId || ''));
+            DB.uni.folders = uniFolders().filter((x) => !gone.has(x.id));
+            save('uni');
+            if (gone.has(route().rest[0] || '')) go(`uni/courses/${cid}`); else render();
+            toast('Folder deleted');
+          });
+      });
+    },
+    onSubmit: (data) => {
+      const name = data.name.trim();
+      if (!name) { toast('A folder needs a name.', 'bad'); return false; }
+      f.name = name;
+      if (data.parent != null) f.parent = data.parent;
+      if (!existing) uniFolders().push(f);
+      saveRender('uni');
+    },
+  });
+}
+
+/** A link or a vault note filed in the same tree as the uploads. */
+function courseLinkDialog(cid, folderId, existing) {
+  const f = existing || { id: uid(), courseId: cid, folderId: folderId || '', kind: 'link',
+    name: '', url: '', noteId: '', note: '', added: todayISO() };
+  const notes = DB.notes;
+  openDialog({
+    title: existing ? 'Edit item' : 'Add a link',
+    body: `
+      <label class="f"><span>Kind</span><select name="kind">
+        <option value="link"${f.kind === 'link' ? ' selected' : ''}>A link somewhere else</option>
+        <option value="note"${f.kind === 'note' ? ' selected' : ''}>A note from the vault</option>
+      </select></label>
+      <div id="linkwrap">
+        <label class="f"><span>Title</span><input name="name" value="${attr(f.name)}" placeholder="Lecture recording, Drive folder…"></label>
+        <label class="f"><span>URL</span><input name="url" value="${attr(f.url || '')}" placeholder="https://…"></label>
+      </div>
+      <div id="notewrap">
+        <label class="f"><span>Note</span><select name="noteId">
+          <option value="">— pick one —</option>
+          ${notes.map((n) => `<option value="${attr(n.id)}"${f.noteId === n.id ? ' selected' : ''}>${esc(n.path ? n.path + ' / ' + n.title : n.title)}</option>`).join('')}
+        </select></label>
+      </div>
+      <label class="f"><span>Note to self</span><input name="note" value="${attr(f.note || '')}" placeholder="What it is, why it matters"></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delitem">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const sync = () => {
+        const kind = $('[name=kind]', dlg).value;
+        $('#linkwrap', dlg).style.display = kind === 'link' ? '' : 'none';
+        $('#notewrap', dlg).style.display = kind === 'note' ? '' : 'none';
+      };
+      $('[name=kind]', dlg).addEventListener('change', sync); sync();
+      const del = $('#delitem', dlg);
+      if (del) del.addEventListener('click', () => {
+        DB.uni.files = uniFiles().filter((x) => x.id !== f.id);
+        close(); saveRender('uni');
+      });
+    },
+    onSubmit: (data) => {
+      f.kind = data.kind;
+      f.note = data.note.trim();
+      if (f.kind === 'link') {
+        const url = data.url.trim();
+        if (!url) { toast('A link needs a URL.', 'bad'); return false; }
+        f.url = /^[a-z]+:/i.test(url) ? url : 'https://' + url;
+        f.name = data.name.trim() || f.url.replace(/^https?:\/\//, '').slice(0, 60);
+        f.noteId = '';
+      } else {
+        if (!data.noteId) { toast('Pick a note.', 'bad'); return false; }
+        const n = noteById(data.noteId);
+        f.noteId = data.noteId;
+        f.name = n ? n.title : 'Note';
+        f.url = '';
+      }
+      if (!existing) uniFiles().push(f);
+      saveRender('uni');
+    },
+  });
+}
+
+/** Rename an upload, or move it to another folder. */
+function fileDialog(f) {
+  const folders = courseFolders(f.courseId);
+  openDialog({
+    title: f.name,
+    body: `
+      <label class="f"><span>Name</span><input name="name" value="${attr(f.name)}"></label>
+      <label class="f"><span>Folder</span><select name="folderId">
+        <option value="">— top level —</option>
+        ${folders.map((x) => `<option value="${attr(x.id)}"${(f.folderId || '') === x.id ? ' selected' : ''}>${esc(folderPath(x.id).map((p) => p.name).join(' / '))}</option>`).join('')}
+      </select></label>
+      <label class="f"><span>Note to self</span><input name="note" value="${attr(f.note || '')}" placeholder="What it is, why it matters"></label>
+      <p class="mini">${esc(fileSize(f.size))} · added ${esc(fmtDate(f.added))}${f.mime ? ' · ' + esc(f.mime) : ''}</p>`,
+    extraFooter: `<button type="button" class="btn danger left" id="delfile">Delete</button>`,
+    onOpen: (dlg, close) => {
+      $('#delfile', dlg).addEventListener('click', () => {
+        close();
+        confirmDialog('Delete file', `“${f.name}” is removed from the desk and from storage. This cannot be undone.`, () => {
+          deleteFileData(f.id);
+          DB.uni.files = uniFiles().filter((x) => x.id !== f.id);
+          saveRender('uni'); toast('File deleted');
+        });
+      });
+    },
+    onSubmit: (data) => {
+      const name = data.name.trim();
+      if (!name) { toast('A file needs a name.', 'bad'); return false; }
+      Object.assign(f, { name, folderId: data.folderId || '', note: data.note.trim() });
+      saveRender('uni');
+    },
+  });
+}
+
+/** Move several things at once, which is what tidying a term's folder needs. */
+function moveItemsDialog(cid, fid) {
+  const here = filesIn(cid, fid);
+  const subs = childFolders(cid, fid);
+  if (!here.length && !subs.length) { toast('Nothing here to move.', 'bad'); return; }
+  // every folder but the one you are standing in; a folder that would swallow
+  // itself is caught per item on submit, not by thinning the list here
+  const targets = courseFolders(cid).filter((x) => x.id !== fid);
+  openDialog({
+    title: 'Move things',
+    submitLabel: 'Move',
+    body: `<label class="f"><span>Into</span><select name="target">
+        <option value="">— top level —</option>
+        ${targets.map((x) => `<option value="${attr(x.id)}">${esc(folderPath(x.id).map((p) => p.name).join(' / '))}</option>`).join('')}
+      </select></label>
+      <div class="list">${[
+        ...subs.map((s) => `<label class="list-row" style="cursor:pointer"><input type="checkbox" name="d_${attr(s.id)}">
+          <div class="grow"><div class="t">${esc(s.name)}</div><div class="m">folder</div></div></label>`),
+        ...here.map((x) => `<label class="list-row" style="cursor:pointer"><input type="checkbox" name="f_${attr(x.id)}">
+          <div class="grow"><div class="t">${esc(x.name)}</div><div class="m">${esc(fileTag(x))}${x.kind === 'file' ? ' · ' + esc(fileSize(x.size)) : ''}</div></div></label>`),
+      ].join('')}</div>`,
+    onSubmit: (data) => {
+      const target = data.target || '';
+      let n = 0, refused = 0;
+      subs.forEach((s) => {
+        if (!data['d_' + s.id]) return;
+        if (target === s.id || isDescendant(target, s.id)) { refused++; return; }
+        s.parent = target; n++;
+      });
+      here.forEach((x) => { if (data['f_' + x.id]) { x.folderId = target; n++; } });
+      if (refused) toast(`${refused} folder${refused === 1 ? '' : 's'} skipped — a folder cannot go inside itself.`, 'bad');
+      if (!n) { if (!refused) toast('Nothing was ticked.', 'bad'); return false; }
+      saveRender('uni');
+      toast(`${n} moved`);
+    },
+  });
+}
+
+/* ---- the panel that sits on a course page ---- */
+
+function coursefilesHTML(c, fid) {
+  const trail = folderPath(fid);
+  const subs = childFolders(c.id, fid);
+  const here = filesIn(c.id, fid);
+  const crumb = `<div class="fcrumb">
+      <button data-open-folder="">Files</button>
+      ${trail.map((f) => `<span>/</span><button data-open-folder="${attr(f.id)}">${esc(f.name)}</button>`).join('')}
+    </div>`;
+
+  const rows = [
+    ...(fid ? [`<div class="list-row click" data-open-folder="${attr((folderById(fid) || {}).parent || '')}">
+      <span class="ftag dir">↰</span><div class="grow"><div class="t">..</div><div class="m">up one level</div></div></div>`] : []),
+    ...subs.map((f) => {
+      const inner = folderContents(c.id, f.id);
+      return `<div class="list-row">
+        <span class="ftag dir">▸</span>
+        <div class="grow click" data-open-folder="${attr(f.id)}"><div class="t">${esc(f.name)}</div>
+          <div class="m">${inner.files.length} file${inner.files.length === 1 ? '' : 's'}${inner.folders.length ? ` · ${inner.folders.length} folder${inner.folders.length === 1 ? '' : 's'}` : ''}</div></div>
+        <button class="btn ghost sm" data-edit-folder="${attr(f.id)}">Edit</button></div>`;
+    }),
+    ...here.map((f) => `<div class="list-row">
+      <span class="ftag">${esc(fileTag(f))}</span>
+      <div class="grow click" data-open-file="${attr(f.id)}"><div class="t trunc">${esc(f.name)}</div>
+        <div class="m trunc">${f.note ? esc(f.note) + ' · ' : ''}${f.kind === 'file' ? esc(fileSize(f.size)) : f.kind === 'link' ? esc(String(f.url).replace(/^https?:\/\//, '').slice(0, 44)) : 'vault note'} · ${esc(fmtDate(f.added))}</div></div>
+      <button class="btn ghost sm" data-edit-file="${attr(f.id)}">Edit</button></div>`),
+  ];
+
+  const body = rows.length
+    ? `<div class="list">${rows.join('')}</div>`
+    : emptyState(fid ? 'This folder is empty' : 'No files yet',
+      'Drop a file anywhere on this panel, or use the buttons above. Anything too big to store goes in as a link.',
+      `${actBtn('+ Folder', 'newfolder')}${actBtn('Upload', 'upload')}${actBtn('+ Link', 'newlink')}`);
+
+  return `<div class="fdrop" data-drop="${attr(fid || '')}">${crumb}${body}</div>`;
+}
+
+function wireCourseFiles(view, c, fid) {
+  const acts = {
+    newfolder: () => folderDialog(c.id, fid, null),
+    upload: () => {
+      const input = document.createElement('input');
+      input.type = 'file'; input.multiple = true;
+      input.onchange = () => uploadCourseFiles(c.id, fid, input.files);
+      input.click();
+    },
+    newlink: () => courseLinkDialog(c.id, fid, null),
+    movehere: () => moveItemsDialog(c.id, fid),
+    seed: () => { seedFolders(c.id); render(); toast('Folders added'); },
+  };
+  on('[data-act]', 'click', (e, el) => { const fn = acts[el.dataset.act]; if (fn) fn(); }, view);
+  on('[data-open-folder]', 'click', (e, el) => {
+    const id = el.dataset.openFolder;
+    go(id ? `uni/courses/${c.id}/${id}` : `uni/courses/${c.id}`);
+  }, view);
+  on('[data-edit-folder]', 'click', (e, el) => { const f = folderById(el.dataset.editFolder); if (f) folderDialog(c.id, fid, f); }, view);
+  on('[data-open-file]', 'click', (e, el) => { const f = fileById(el.dataset.openFile); if (f) openCourseFile(f); }, view);
+  on('[data-edit-file]', 'click', (e, el) => {
+    const f = fileById(el.dataset.editFile);
+    if (f) { if (f.kind === 'file') fileDialog(f); else courseLinkDialog(c.id, fid, f); }
+  }, view);
+
+  const drop = $('.fdrop', view);
+  if (!drop) return;
+  const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+  ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { stop(e); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { stop(e); if (ev === 'dragleave' && drop.contains(e.relatedTarget)) return; drop.classList.remove('over'); }));
+  drop.addEventListener('drop', (e) => {
+    if (e.dataTransfer && e.dataTransfer.files.length) uploadCourseFiles(c.id, fid, e.dataTransfer.files);
+  });
+}
 /* ============================================================== 8. the vault */
 
 function createNote({ title, path = '', body = '', kind = 'md', tags = null }) {
@@ -4303,6 +4736,7 @@ function renderSettings(view) {
         <div class="list-row"><div class="grow">Teachers</div><span class="num">${DB.teachers.length}</span></div>
         <div class="list-row"><div class="grow">Tasks</div><span class="num">${DB.tasks.length}</span></div>
         <div class="list-row"><div class="grow">Datasets</div><span class="num">${DB.datasets.length}</span></div>
+        <div class="list-row"><div class="grow">Course files</div><span class="num">${uniFiles().length}${uniFiles().some((f) => f.kind === 'file') ? ` <span class="mut">· ${fileSize(sum(uniFiles().filter((f) => f.kind === 'file').map((f) => Number(f.size) || 0)))}</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Transactions</div><span class="num">${(DB.finances.tx || []).length}</span></div>
         <div class="list-row"><div class="grow">Habits</div><span class="num">${habitItems(true).length}${Object.keys(DB.habits.ticks || {}).length ? ` <span class="mut">· ${Object.keys(DB.habits.ticks).length} days ticked</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Goals</div><span class="num">${goalItems().length}${(DB.goals.reviews || []).length ? ` <span class="mut">· ${DB.goals.reviews.length} reviews</span>` : ''}</span></div>
@@ -4312,7 +4746,7 @@ function renderSettings(view) {
         <div class="list-row"><div class="grow">Local cache</div><span class="num">${Math.round(bytes / 1024)} KB</span></div>
       </div>`, { flush: true })}
 
-      ${panel('Backup', `<p class="mini">A single JSON file with every collection <b>and every note body</b> — enough to rebuild the desk from nothing.</p>
+      ${panel('Backup', `<p class="mini">A single JSON file with every collection, <b>every note body and every uploaded course file</b> — enough to rebuild the desk from nothing. A big shelf makes a big file.</p>
         <div class="wrap"><button class="btn" id="backup">Download backup</button>
         <button class="btn" id="restore">Restore from file</button>
         <button class="btn danger" id="locknow">Lock this device</button></div>`)}
@@ -4331,9 +4765,14 @@ function renderSettings(view) {
   $('#locknow').addEventListener('click', lock);
 
   $('#backup').addEventListener('click', async () => {
-    const payload = { exported: new Date().toISOString(), collections: {}, bodies: {} };
+    toast('Gathering everything — large shelves take a moment.');
+    const payload = { exported: new Date().toISOString(), collections: {}, bodies: {}, files: {} };
     COLLECTIONS.forEach((c) => { payload.collections[c] = DB[c]; });
     for (const n of DB.notes) payload.bodies[n.id] = await loadBody(n.id);
+    for (const f of uniFiles().filter((x) => x.kind === 'file')) {
+      const rec = await loadFileData(f.id);
+      if (rec && rec.d) payload.files[f.id] = rec;
+    }
     download(`zettelkasten-backup-${todayISO()}.json`, JSON.stringify(payload, null, 2));
   });
   $('#restore').addEventListener('click', () => {
@@ -4350,6 +4789,7 @@ function renderSettings(view) {
           confirmDialog('Restore backup', 'Everything currently on this desk is replaced by the file contents.', () => {
             COLLECTIONS.forEach((c) => { if (data.collections[c] != null) DB[c] = data.collections[c]; });
             Object.entries(data.bodies || {}).forEach(([id, text]) => saveBody(id, text, true));
+            Object.entries(data.files || {}).forEach(([id, rec]) => putFileData(id, rec).catch(() => {}));
             COLLECTIONS.forEach((c) => saveCollection(c, true));
             toast('Restored', 'ok');
             render();
@@ -5375,10 +5815,10 @@ function appDialog(existing) {
     onOpen: (dlg, close) => {
       const del = $('#delapp', dlg);
       if (del) del.addEventListener('click', () => {
+        close();
         confirmDialog('Delete application', `“${appTitle(a)}” goes, with its checklist, interviews and links. Essays and recommenders stay.`, () => {
           adm().apps = allApps().filter((x) => x.id !== a.id);
           save('admissions');
-          close();
           if (route().param === a.id) go('adm/applications'); else render();
           toast('Application deleted');
         });
@@ -5545,10 +5985,11 @@ function essayDialog(existing, presetAppId) {
       const del = $('#delessay', dlg);
       if (del) del.addEventListener('click', () => {
         const used = appsUsingEssay(e.id).length;
+        close();
         confirmDialog('Delete essay', `“${e.title}” goes off the list${used ? ` and off ${used} application${used === 1 ? '' : 's'}` : ''}. The note in the vault stays.`, () => {
           adm().essays = (adm().essays || []).filter((x) => x.id !== e.id);
           allApps().forEach((a) => { a.essayIds = (a.essayIds || []).filter((id) => id !== e.id); });
-          close(); saveRender('admissions'); toast('Essay deleted');
+          saveRender('admissions'); toast('Essay deleted');
         });
       });
     },
@@ -5628,10 +6069,11 @@ function recDialog(existing) {
       const del = $('#delrec', dlg);
       if (del) del.addEventListener('click', () => {
         const n = appsForRec(p.id).length;
+        close();
         confirmDialog('Delete recommender', `${p.name} goes${n ? `, and off ${n} application${n === 1 ? '' : 's'}` : ''}.`, () => {
           adm().recommenders = (adm().recommenders || []).filter((x) => x.id !== p.id);
           allApps().forEach((a) => { a.recs = (a.recs || []).filter((r) => r.recId !== p.id); });
-          close(); saveRender('admissions'); toast('Recommender deleted');
+          saveRender('admissions'); toast('Recommender deleted');
         });
       });
     },
@@ -6242,6 +6684,7 @@ function paletteItems() {
   add('action', 'Add a test score', 'IELTS, SAT, whatever they ask for', () => testDialog(null), 4);
   add('action', 'Log a 1-1', 'Open a teacher journal', () => go('work/teachers'), 4);
   add('action', 'Upload a CSV', 'Exam export or the quality survey', () => go('work/reports'), 4);
+  add('action', 'Course files', 'The shelf on a course page', () => go('uni/courses'), 4);
 
   // pages
   Object.entries(NAV).forEach(([face, pages]) => pages.forEach((p) => {
@@ -6256,6 +6699,7 @@ function paletteItems() {
   goalItems().forEach((g) => add('goal', g.title, `${g.horizon} goal · ${goalProgress(g).pct}%`, () => { go('shared/goals'); setTimeout(() => goalDialog(g), 60); }, 2));
   habitItems().forEach((h) => add('habit', h.name, h.cadence === 'weekly' ? `${Number(h.target) || 1}× a week` : 'daily habit', () => go('shared/habits'), 2));
   (DB.uni.courses || []).forEach((c) => add('course', c.name, c.code || 'course', () => go(`uni/courses/${c.id}`), 2));
+  uniFiles().forEach((f) => add('file', f.name, `${courseName(f.courseId) || 'course'}${folderById(f.folderId) ? ' · ' + folderById(f.folderId).name : ''}`, () => openCourseFile(f), 1));
   allApps().forEach((a) => add('app', appTitle(a), `${stageLabel(a.status)}${a.deadline ? ' · ' + relDays(a.deadline) : ''}`, () => go(`adm/applications/${a.id}`), 2));
   (DB.admissions.essays || []).forEach((e) => add('essay', e.title, `${essayStateLabel(e.status)} essay`, () => { go('adm/essays'); setTimeout(() => essayDialog(e), 60); }, 2));
   (DB.admissions.recommenders || []).forEach((p) => add('rec', p.name, [p.role, p.org].filter(Boolean).join(' · ') || 'recommender', () => go('adm/recommenders'), 1));
@@ -6281,7 +6725,7 @@ function fuzzyScore(needle, hay) {
   return i === n.length ? score * 0.4 : -1;
 }
 
-const KIND_ICON = { action: '⌁', page: '◇', teacher: '☺', task: '▤', course: '❐', note: '✦', report: '▦', goal: '◎', habit: '✓', app: '⌸', essay: '✑', rec: '☏' };
+const KIND_ICON = { action: '⌁', page: '◇', teacher: '☺', task: '▤', course: '❐', note: '✦', report: '▦', goal: '◎', habit: '✓', app: '⌸', essay: '✑', rec: '☏', file: '▭' };
 
 let paletteOpen = false;
 function openPalette(prefill = '') {

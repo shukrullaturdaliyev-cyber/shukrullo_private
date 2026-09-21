@@ -3,7 +3,7 @@
 A private, single-user operations dashboard with three faces and a set of shared modules.
 
 * **Work** — head of the English department at an SAT-prep school: overview, teacher 1-1 journals, tasks, CSV report engines.
-* **CAU** (Central Asian University) — overview, timetable, courses, tasks, lecture notes (*Konspekty*).
+* **CAU** (Central Asian University) — overview, timetable, courses with their own folders of files, tasks, lecture notes (*Konspekty*).
 * **Apply** — the admissions cycle: universities and scholarships, requirement checklists, essays, recommenders,
   tests and scores, its own task board.
 * **Everywhere** — a Today page across all three faces, a native calendar with two-way Google sync, habits, goals and
@@ -191,6 +191,23 @@ One row a calendar day, every field optional, and a day with nothing in it is no
 lights-out and waking rather than a number of hours, so 23:40 → 06:15 reads as 6h 35m instead of going
 negative across midnight; nights under six hours are marked short. Charts for hours a night over 30 days and
 weight over the last 90 readings. Logging a day that already exists fills its gaps rather than replacing it.
+
+### Course files
+
+Every course page carries a shelf. A new course is created with the folders it will need — Syllabus, Lectures,
+Seminars, Assignments, Readings, Exams — and you can nest more inside them to any depth. A folder holds three
+kinds of thing: **uploaded files** (drag them onto the panel or press Upload), **links** to anything living
+elsewhere, and **vault notes** filed alongside them. Items can be renamed, moved one at a time or in a batch,
+and deleted; deleting a folder takes what is inside it, and deleting a course clears its whole shelf.
+
+PDFs and images open in a preview inside the app; everything else downloads. Uploads are capped at 8 MB each —
+past that the answer is a link, and the dialog says so.
+
+**Where the bytes live.** File metadata sits in the `uni` collection, but the contents of each upload go in their
+own KV key (`f_<id>`), exactly as note bodies do. Adding a 4 MB lecture deck therefore costs one write, and every
+later save of the course list stays small. Anything over ~700 KB is deliberately kept out of `localStorage` so a
+big shelf cannot exhaust the browser quota; those files are fetched from KV when opened. The backup in Settings
+carries the uploaded bytes too, so it still rebuilds the desk from nothing — a big shelf simply makes a big file.
 
 ### Admissions
 
