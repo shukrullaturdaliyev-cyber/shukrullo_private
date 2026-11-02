@@ -6,8 +6,8 @@ A private, single-user operations dashboard with three faces and a set of shared
 * **CAU** (Central Asian University) — overview, timetable, courses with their own folders of files, tasks, lecture notes (*Konspekty*).
 * **Apply** — the admissions cycle: universities and scholarships, requirement checklists, essays, recommenders,
   tests and scores, its own task board.
-* **Everywhere** — a Today page across all three faces, a native calendar with two-way Google sync, habits, goals and
-  the weekly review, an Obsidian-style note vault, a health log, finances, settings.
+* **Everywhere** — a Today page across all three faces, a native calendar with two-way Google sync, habits, goals, a
+  weekly review page, an Obsidian-style note vault, a health log, finances, settings.
 
 One user, one passphrase. The app itself is static; data lives in a Cloudflare KV namespace and is
 mirrored into `localStorage` so nothing is ever lost when the network is not there.
@@ -18,7 +18,7 @@ mirrored into `localStorage` so nothing is ever lost when the network is not the
 
 ```
 public/index.html          the whole shell
-public/style.css           the design system (dark only, four themes)
+public/style.css           the design system (dark only, editorial, four themes)
 public/app.js              the entire app — routing, modules, engines
 public/vendor/             Chart.js 4, PapaParse 5, marked, lz-string,
                            React 18 + ReactDOM UMD, Excalidraw 0.17.6 + excalidraw-assets/
@@ -191,6 +191,33 @@ One row a calendar day, every field optional, and a day with nothing in it is no
 lights-out and waking rather than a number of hours, so 23:40 → 06:15 reads as 6h 35m instead of going
 negative across midnight; nights under six hours are marked short. Charts for hours a night over 30 days and
 weight over the last 90 readings. Logging a day that already exists fills its gaps rather than replacing it.
+
+### The look
+
+Dark only, and deliberately editorial rather than dashboard-shaped. Display type is EB Garamond — page titles, panel
+headings and the big numbers on every stat. The UI face (Geist) is kept for the things that are labels rather than
+writing: tracking-wide capitals, table headers, pills, data in tables. Panels are not boxes; they are sections under a
+hairline rule, so a page reads as one column of an article instead of a grid of cards. Stat values are set large and
+quiet at 38px with tabular figures. Content sits inside a 1240px measure; dense pages — calendar, timetable, kanban,
+reports, the vault — opt out of it through `WIDE_PAGES` and run full width.
+
+### The team at a glance
+
+The 1-1s page opens on the whole team before it lists anyone: who is overdue for a conversation (nobody should pass
+three weeks), every open item agreed in a 1-1 and not yet ticked in either direction, and **what keeps coming up** —
+words and phrases that appear in more than one teacher's journal, with how many journals each turns up in. That last
+one is frequency and nothing cleverer: stopwords and the words that are structurally generic in a teaching journal
+(*students, class, group, topics…*) are dropped, words shorter than five letters are ignored, and a phrase always beats
+the single words inside it, so what is left tends to be an actual theme. It is labelled on the page as a signal to look
+at rather than an analysis.
+
+### The weekly review
+
+`Everywhere → Review` reads the week rather than asking you to remember it: what closed, what slipped past its date,
+habits kept with a bar each, every 1-1 entry logged, what is due in the next seven days, and what the week cost. Arrows
+step back and forward a week at a time and the figures move with them, so filing a review for a week you missed files
+*that* week. Deltas compare against the last review you actually filed, not the previous calendar week. Filing still
+goes through the same dialog as before and can still write the review into the vault as a note.
 
 ### Course files
 

@@ -602,6 +602,7 @@ const NAV = {
     { id: 'calendar', label: 'Calendar', ico: '▣' },
     { id: 'habits', label: 'Habits', ico: '✓' },
     { id: 'goals', label: 'Goals', ico: '◎' },
+    { id: 'review', label: 'Review', ico: '◴' },
     { id: 'notes', label: 'Notes', ico: '✦' },
     { id: 'health', label: 'Health', ico: '♡' },
     { id: 'finances', label: 'Finances', ico: '₮' },
@@ -734,6 +735,10 @@ function topbar(title, { crumb = '', actions = '' } = {}) {
 
 const PAGES = {}; // filled in by the module sections below
 
+/* Dense pages opt out of the reading measure the editorial layout imposes. */
+const WIDE_PAGES = new Set(['shared/calendar', 'shared/notes', 'uni/timetable', 'uni/konspekty',
+  'work/reports', 'work/tasks', 'uni/tasks', 'adm/tasks']);
+
 function render() {
   const r = route();
   if (!$('#view')) return; // login screen is up — leave its theme alone
@@ -746,6 +751,9 @@ function render() {
   const key = `${r.face}/${r.page}`;
   const fn = PAGES[key];
   const view = $('#view');
+  const wide = WIDE_PAGES.has(key);
+  view.classList.toggle('wide', wide);
+  $('#topbar').classList.toggle('wide', wide);
   view.scrollTop = 0;
   if (!fn) { view.innerHTML = emptyState('Nothing here', 'That page does not exist — pick one from the sidebar.'); return; }
   bindingPage = true;
@@ -1158,9 +1166,67 @@ function quickNoteDialog() {
 }
 
 /* ---- 1-1s list ---- */
+
+/* ---- 1-1s: the team at a glance ---------------------------------------- */
+
+const STOP = new Set(`a an and are as at be been but by can could did do does for from had has have he her
+him his how i if in into is it its me my not of on one or our out she so some than that the their them then
+there these they this to too up was we were what when which who will with would you your about after again
+also any because before being between both during each few more most other over same such only very also
+his her
+students student teacher teachers class classes group groups lesson lessons
+problem problems topic topics thing things session sessions talked talk
+first second third` .split(/\s+/).filter(Boolean));
+
+/** Words and phrases that turn up in more than one teacher's journal.
+ *  A signal worth a look, not an analysis — it is frequency, nothing cleverer. */
+function journalThemes(teachers, min = 2) {
+  const seen = new Map(); // term -> { count, who:Set }
+  teachers.forEach((t) => {
+    const words = (t.entries || []).map((e) => e.text).join(' ')
+      .toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/)
+      .filter((w) => w.length > 4 && !STOP.has(w));
+    const terms = [...words];
+    for (let i = 0; i < words.length - 1; i++) terms.push(words[i] + ' ' + words[i + 1]);
+    terms.forEach((term) => {
+      const rec = seen.get(term) || { count: 0, who: new Set() };
+      rec.count++; rec.who.add(t.name);
+      seen.set(term, rec);
+    });
+  });
+  return [...seen.entries()]
+    .filter(([, r]) => r.who.size >= min)
+    .map(([term, r]) => ({ term, count: r.count, who: [...r.who] }))
+    .sort((a, b) => b.who.length - a.who.length || b.count - a.count || a.term.localeCompare(b.term))
+    // a phrase beats the words inside it: keep every bigram, drop any single word
+    // that one of them already contains
+    .filter((x, i, all) => x.term.includes(' ')
+      || !all.some((y) => y.term.includes(' ') && y.term.split(' ').includes(x.term)))
+    .slice(0, 10);
+}
+
+/** Every open task across every journal, both directions. */
+function teamOpenItems() {
+  return DB.teachers.flatMap((t) => (t.entries || [])
+    .filter((e) => (e.kind === 'task_me' || e.kind === 'task_them') && !e.done)
+    .map((e) => ({ t, e })))
+    .sort((a, b) => String(a.e.date).localeCompare(String(b.e.date)));
+}
+
 function renderTeachers(view, r) {
   if (r.param) return renderTeacherPage(view, r);
   topbar('1-1s', { actions: `<button class="btn primary" id="addteacher">+ Teacher</button>` });
+
+  const activeT = activeTeachers();
+  const entries = DB.teachers.reduce((n, t) => n + (t.entries || []).length, 0);
+  const open = teamOpenItems();
+  const overdue = activeT.filter((t) => { const d = staleness(t); return d == null || d > 21; })
+    .sort((a, b) => (staleness(b) ?? 1e6) - (staleness(a) ?? 1e6));
+  const themes = journalThemes(DB.teachers);
+  const lines = [];
+  if (overdue.length) lines.push({ kind: 'warn', html: `<b>${overdue.length}</b> overdue for a conversation` });
+  if (open.length) lines.push({ kind: '', html: `<b>${open.length}</b> open item${open.length === 1 ? '' : 's'}` });
+  if (!lines.length && activeT.length) lines.push({ kind: 'good', html: 'Everyone seen inside three weeks.' });
 
   const rows = (list) => list.map((t) => {
     const days = staleness(t);
@@ -1175,13 +1241,45 @@ function renderTeachers(view, r) {
     </div>`;
   }).join('');
 
-  const active = activeTeachers().sort((a, b) => (staleness(b) ?? 1e6) - (staleness(a) ?? 1e6));
+  const active = [...activeT].sort((a, b) => (staleness(b) ?? 1e6) - (staleness(a) ?? 1e6));
   const former = DB.teachers.filter((t) => t.left);
 
   view.innerHTML = `
+    ${DB.teachers.length ? hero('The team', `${faceName('work')} · one-to-ones`, lines) : ''}
+
+    ${DB.teachers.length ? `<div class="stats">
+      ${statBox(activeT.length, 'teachers', former.length ? `<div class="delta flat">${former.length} former</div>` : '')}
+      ${statBox(entries, 'journal entries')}
+      ${statBox(overdue.length, 'overdue for a 1-1', overdue.length ? `<div class="delta down">over three weeks</div>` : `<div class="delta up">all current</div>`)}
+      ${statBox(open.length, 'open items')}
+    </div>` : ''}
+
+    ${overdue.length ? panel('Needs a conversation', `<div class="list">${overdue.map((t) => {
+      const d = staleness(t);
+      return `<div class="list-row click" data-teacher="${attr(t.id)}">
+        <div class="grow"><div class="t">${esc(t.name)}</div>
+          <div class="m">${esc(t.teaches || 'no subject set')}${d == null ? '' : ` · last seen ${esc(fmtDate(lastOneOnOne(t)))}`}</div></div>
+        <span class="pill bad">${d == null ? 'never met' : d + 'd ago'}</span></div>`;
+    }).join('')}</div>`, { flush: true, sub: 'Nobody should go past three weeks' }) : ''}
+
+    ${open.length ? panel('Open with teachers', `<div class="list">${open.map(({ t, e }) => `
+      <div class="list-row click" data-teacher="${attr(t.id)}">
+        <span class="pill ${e.kind === 'task_me' ? 'warn' : ''}">${e.kind === 'task_me' ? 'me' : 'them'}</span>
+        <div class="grow"><div class="t">${esc(e.text)}</div>
+          <div class="m">${esc(t.name)}${e.date ? ' · ' + esc(fmtDate(e.date)) : ''}</div></div>
+        ${e.date ? `<span class="pill">${esc(relDays(e.date))}</span>` : ''}</div>`).join('')}</div>`,
+      { flush: true, sub: 'Agreed in a 1-1 and not yet ticked' }) : ''}
+
+    ${themes.length ? panel('Recurring across journals', `<div class="wrap">${themes.map((x) => `
+      <span class="pill${x.who.length >= 3 ? ' accent' : ''}" title="${attr(x.who.join(', '))}">${esc(x.term)}
+        <span class="num mut">${x.who.length}</span></span>`).join('')}</div>
+      <p class="mini mut" style="margin:12px 0 0">Words and phrases appearing in more than one teacher's journal, with how many
+      journals each turns up in. Frequency only — a signal worth a look, not an analysis.</p>`,
+      { sub: 'What keeps coming up' }) : ''}
+
     ${panel(`Teachers · ${active.length}`, active.length ? `<div class="list">${rows(active)}</div>`
       : emptyState('No teachers yet', 'Add one — you only need a name. Journals, tasks and exam attribution build up from there.'), { flush: true })}
-    ${former.length ? `<details class="panel"><summary style="padding:12px 14px;cursor:pointer">Former teachers · ${former.length}</summary>
+    ${former.length ? `<details class="panel"><summary style="padding:12px 0;cursor:pointer">Former teachers · ${former.length}</summary>
       <div class="list">${rows(former)}</div></details>` : ''}`;
 
   $('#addteacher').addEventListener('click', () => openDialog({
@@ -5413,8 +5511,8 @@ function weekFacts(anchor = todayISO()) {
     spent: Math.abs(sum(spend.map(inUZS))), notes, goals: goalsOpen() };
 }
 
-function reviewDialog() {
-  const f = weekFacts();
+function reviewDialog(anchor) {
+  const f = weekFacts(anchor || todayISO());
   const prev = (DB.goals.reviews || []).slice(-1)[0];
   openDialog({
     title: `Weekly review · ${fmtDate(f.from)} → ${fmtDate(f.to)}`,
@@ -5486,6 +5584,111 @@ ${f.ahead.length ? f.ahead.map((d) => `- ${d.due} · ${d.label}`).join('\n') : '
 `;
 }
 
+
+/* ---- the weekly review, as a page ---------------------------------------
+   The dialog files a review; this page is where you read the week first.   */
+
+let reviewAnchor = '';
+const reviewWeek = () => reviewAnchor || todayISO();
+const shiftReviewWeek = (n) => { reviewAnchor = toISO(addDays(weekStart(reviewWeek()), n * 7)); render(); };
+
+function renderReview(view) {
+  const f = weekFacts(reviewWeek());
+  const filed = [...(DB.goals.reviews || [])].sort((a, b) => a.week.localeCompare(b.week));
+  const thisOne = filed.find((rv) => rv.week === f.from);
+  const prev = filed.filter((rv) => rv.week < f.from).slice(-1)[0];
+  const isNow = f.from === toISO(weekStart(todayISO()));
+
+  topbar('Weekly review', {
+    crumb: `${esc(fmtDate(f.from))} → ${esc(fmtDate(f.to))}${isNow ? ' · this week' : ''}`,
+    actions: `<button class="btn ghost sm" id="wprev">←</button>
+      <button class="btn ghost sm" id="wthis">This week</button>
+      <button class="btn ghost sm" id="wnext"${isNow ? ' disabled' : ''}>→</button>
+      <button class="btn primary" id="filereview">${thisOne ? 'File again' : 'File the review'}</button>`,
+  });
+
+  const lines = [];
+  if (f.closed.length) lines.push({ kind: 'good', html: `<b>${f.closed.length}</b> closed` });
+  if (f.slipped.length) lines.push({ kind: 'bad', html: `<b>${f.slipped.length}</b> slipped` });
+  if (f.oneOnOnes.length) lines.push({ kind: '', html: `<b>${f.oneOnOnes.length}</b> 1-1 entries` });
+  if (f.ahead.length) lines.push({ kind: 'warn', html: `<b>${f.ahead.length}</b> due in the next seven days` });
+  if (!lines.length) lines.push({ kind: '', html: 'Nothing recorded for this week.' });
+
+  const rowsOf = (list, meta) => `<div class="list">${list.map((x) => `
+    <div class="list-row click" data-open-task="${attr(x.id)}">
+      <div class="grow"><div class="t">${esc(x.title || x.label)}</div>
+        <div class="m">${meta(x)}</div></div></div>`).join('')}</div>`;
+
+  view.innerHTML = `
+    ${hero(isNow ? 'This week' : `Week of ${fmtDate(f.from)}`,
+      `${fmtDate(f.from)} → ${fmtDate(f.to)}`, lines,
+      thisOne ? `<span class="pill ok">filed ${esc(fmtDay(thisOne.filed))}</span>` : '')}
+
+    <div class="stats">
+      ${statBox(f.closed.length, 'closed', prev ? deltaHTML(f.closed.length, prev.closed, { p: 0 }) : '')}
+      ${statBox(f.slipped.length, 'slipped', prev ? deltaHTML(f.slipped.length, prev.slipped, { p: 0, lowerIsBetter: true }) : '')}
+      ${statBox(`${f.habitPct}%`, 'habits kept', prev ? deltaHTML(f.habitPct, prev.habitPct, { p: 0, unit: '%' }) : '')}
+      ${statBox(f.oneOnOnes.length, '1-1 entries')}
+    </div>
+
+    <div class="grid g-side">
+      ${panel('Closed', f.closed.length
+        ? rowsOf(f.closed, (t) => `${esc(faceName(t.face))}${repeatOf(t) ? ' · ' + esc(repeatLabel(t)) : ''}`)
+        : `<p class="mini mut" style="margin:0">Nothing was ticked off this week.</p>`, { flush: f.closed.length > 0 })}
+
+      ${panel('Slipped past its date', f.slipped.length
+        ? rowsOf(f.slipped, (t) => `${esc(faceName(t.face))} · ${esc(relDays(t.due))}`)
+        : `<p class="mini mut" style="margin:0">Nothing overran.</p>`, { flush: f.slipped.length > 0 })}
+    </div>
+
+    ${f.habitRows.length ? panel('Habits', `<div class="list">${f.habitRows.map((r) => `
+      <div class="list-row"><div class="grow"><div class="t">${esc(r.h.name)}</div>
+        <div class="m">${r.hit}/${r.expected}${r.pct == null ? '' : ` · ${r.pct}%`}</div></div>
+        <div style="flex:0 0 120px"><div class="bar ${r.pct >= 80 ? 'ok' : r.pct >= 50 ? 'warn' : 'bad'}"><i style="width:${r.pct || 0}%"></i></div></div>
+      </div>`).join('')}</div>`, { flush: true, sub: `${f.habitPct}% kept across the week` }) : ''}
+
+    <div class="grid g-side">
+      ${panel('1-1s this week', f.oneOnOnes.length ? `<div class="list">${f.oneOnOnes.map(({ t, e }) => `
+        <div class="list-row click" data-teacher="${attr(t.id)}">
+          <div class="grow"><div class="t trunc">${esc(e.text)}</div>
+            <div class="m">${esc(t.name)} · ${esc(fmtDate(e.date))}</div></div></div>`).join('')}</div>`
+        : `<p class="mini mut" style="margin:0">No 1-1 entries this week.</p>`, { flush: f.oneOnOnes.length > 0 })}
+
+      ${panel('The next seven days', f.ahead.length ? `<div class="list">${f.ahead.map((d) => `
+        <div class="list-row click" data-open-task="${attr(d.id)}">
+          <div class="grow"><div class="t trunc">${esc(d.label)}</div>
+            <div class="m">${d.kind === 'step' ? 'step' : 'final deadline'}</div></div>
+          <span class="pill ${dueClass(d.due)}">${esc(fmtDay(d.due))}</span></div>`).join('')}</div>`
+        : `<p class="mini mut" style="margin:0">Nothing due in the next seven days.</p>`, { flush: f.ahead.length > 0 })}
+    </div>
+
+    ${f.spent ? panel('Money', `<div class="list">
+      <div class="list-row"><div class="grow">Spent this week</div><span class="num">${esc(money(f.spent, 'UZS'))}</span></div>
+      <div class="list-row"><div class="grow">Per day</div><span class="num">${esc(money(Math.round(f.spent / 7), 'UZS'))}</span></div>
+    </div>`, { flush: true }) : ''}
+
+    ${thisOne && (thisOne.good || thisOne.bad || thisOne.change) ? panel('What you wrote', `
+      ${thisOne.good ? `<p class="mini b">WENT WELL</p><p style="margin:0 0 12px;white-space:pre-wrap">${esc(thisOne.good)}</p>` : ''}
+      ${thisOne.bad ? `<p class="mini b">DID NOT</p><p style="margin:0 0 12px;white-space:pre-wrap">${esc(thisOne.bad)}</p>` : ''}
+      ${thisOne.change ? `<p class="mini b">ONE THING TO CHANGE</p><p style="margin:0;white-space:pre-wrap">${esc(thisOne.change)}</p>` : ''}
+      ${thisOne.noteId ? `<div class="wrap" style="margin-top:12px"><button class="btn sm" data-goto="shared/notes/${attr(thisOne.noteId)}">Open the note ↗</button></div>` : ''}`) : ''}
+
+    ${filed.length ? panel(`Filed reviews · ${filed.length}`, `<div class="list">${[...filed].reverse().slice(0, 12).map((rv) => `
+      <div class="list-row click" data-week="${attr(rv.week)}">
+        <div class="grow"><div class="t">Week of ${esc(fmtDate(rv.week))}</div>
+          <div class="m">${rv.closed} closed · ${rv.slipped} slipped · ${rv.habitPct}% habits${rv.change ? ' · ' + esc(rv.change.slice(0, 48)) : ''}</div></div>
+        ${rv.week === f.from ? '<span class="pill ok">showing</span>' : ''}</div>`).join('')}</div>`, { flush: true }) : ''}`;
+
+  $('#wprev').addEventListener('click', () => shiftReviewWeek(-1));
+  $('#wnext').addEventListener('click', () => shiftReviewWeek(1));
+  $('#wthis').addEventListener('click', () => { reviewAnchor = ''; render(); });
+  $('#filereview').addEventListener('click', () => reviewDialog(reviewWeek()));
+  on('[data-open-task]', 'click', (e, el) => { const t = taskById(el.dataset.openTask); if (t) taskDialog(t, t.face); }, view);
+  on('[data-teacher]', 'click', (e, el) => go(`work/teachers/${el.dataset.teacher}`), view);
+  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
+  on('[data-week]', 'click', (e, el) => { reviewAnchor = el.dataset.week; render(); }, view);
+}
+PAGES['shared/review'] = renderReview;
 /* ------------------------------------------------------------ 9d. health log */
 
 const healthDays = () => (DB.health.days || []).slice().sort((a, b) => a.date.localeCompare(b.date));
