@@ -256,7 +256,7 @@ function download(filename, text, mime = 'application/json') {
 
 /* --------------------------------------------------- 2. storage + sync layer */
 
-const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets', 'habits', 'goals', 'health', 'admissions'];
+const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets', 'habits', 'goals', 'health', 'admissions', 'dept'];
 const LS = 'desk:';
 const PASS_KEY = 'desk:pass';
 
@@ -283,6 +283,7 @@ const DEFAULTS = () => ({
   goals: { items: [], reviews: [] },
   health: { days: [] },
   admissions: { apps: [], essays: [], recommenders: [], tests: [] },
+  dept: { standard: 80, css: [], exams: [], observations: [], groups: [] },
 });
 
 let DB = DEFAULTS();
@@ -387,6 +388,9 @@ async function loadAll() {
   if (!Array.isArray(DB.goals.reviews)) DB.goals.reviews = [];
   DB.health = Object.assign({ days: [] }, DB.health || {});
   if (!Array.isArray(DB.health.days)) DB.health.days = [];
+  DB.dept = Object.assign({ standard: 80, css: [], exams: [], observations: [], groups: [] }, DB.dept || {});
+  ['css', 'exams', 'observations', 'groups'].forEach((k) => { if (!Array.isArray(DB.dept[k])) DB.dept[k] = []; });
+  if (!Number.isFinite(Number(DB.dept.standard))) DB.dept.standard = 80;
   DB.admissions = Object.assign({ apps: [], essays: [], recommenders: [], tests: [] }, DB.admissions || {});
   ['apps', 'essays', 'recommenders', 'tests'].forEach((k) => { if (!Array.isArray(DB.admissions[k])) DB.admissions[k] = []; });
   DB.admissions.apps.forEach((a) => {
@@ -579,6 +583,7 @@ const NAV = {
   work: [
     { id: 'overview', label: 'Overview', ico: '◇' },
     { id: 'teachers', label: '1-1s', ico: '☺' },
+    { id: 'dept', label: 'Department', ico: '◫' },
     { id: 'tasks', label: 'Tasks', ico: '▤' },
     { id: 'reports', label: 'Reports', ico: '▦' },
   ],
@@ -1307,9 +1312,19 @@ function renderTeacherPage(view, r) {
   const me = openTasks(t, 'task_me');
   const them = openTasks(t, 'task_them');
 
+  const myCss = cssFor(t.id);
+  const lastCss = myCss.slice(-1)[0] || null;
+  const myExams = examsFor(t.id);
+  const myPool = poolPassRate(myExams);
+  const myObs = obsFor(t.id);
+  const myGroups = groupsFor(t.id);
+
   topbar(t.name, {
     crumb: `<a href="${href('work/teachers')}">1-1s</a> · ${esc(t.teaches || 'no subject set')}${t.left ? ' · former' : ''}`,
-    actions: `<button class="btn" id="editteacher">Edit</button>`,
+    actions: `<button class="btn sm ghost" id="tobs">+ Observation</button>
+      <button class="btn sm ghost" id="texam">+ Exam result</button>
+      <button class="btn sm" id="tcss">+ CSS</button>
+      <button class="btn" id="editteacher">Edit</button>`,
   });
 
   const entries = [...t.entries].sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
@@ -1324,6 +1339,40 @@ function renderTeacherPage(view, r) {
       ${statBox(them.length, 'waiting on them')}
       ${statBox(t.entries.length, 'journal entries')}
     </div>
+
+    <div class="stats">
+      ${statBox(lastCss ? lastCss.rate + '%' : '—', 'latest CSS',
+        lastCss ? `<div class="delta ${Number(lastCss.rate) >= cssStandard() ? 'up' : 'down'}">${esc(deptMonthName(lastCss.month))} · standard ${cssStandard()}%</div>`
+          : `<div class="delta flat">nothing recorded</div>`)}
+      ${statBox(myPool ? myPool.pct + '%' : '—', 'exam pass rate',
+        myPool ? `<div class="delta flat">${myPool.passed} of ${myPool.sat} over ${myExams.length} sitting${myExams.length === 1 ? '' : 's'}</div>` : '')}
+      ${statBox(myObs.filter((o) => o.done).length, 'observations',
+        myObs.some((o) => !o.done) ? `<div class="delta flat">${myObs.filter((o) => !o.done).length} scheduled</div>` : '')}
+      ${statBox(myGroups.length, 'groups',
+        myGroups.length ? `<div class="delta flat">${esc(myGroups.map((g) => g.name).join(', ').slice(0, 34))}</div>` : '')}
+    </div>
+
+    ${myCss.length > 1 ? panel('CSS trend', `<div class="wrap" style="gap:18px;align-items:flex-end">
+      ${sparkline(myCss.map((c) => Number(c.rate)), { w: 240, h: 54 })}
+      <div class="wrap">${myCss.slice(-8).map((c) => `<span class="pill ${Number(c.rate) < cssStandard() ? 'bad' : 'ok'}"
+        title="${attr(c.note || '')}">${esc(monthShort(c.month))} ${esc(String(c.rate))}%</span>`).join('')}</div>
+    </div>`, { sub: `Against a ${cssStandard()}% standard` }) : ''}
+
+    ${myExams.length ? panel('Exam results', `<div class="list">${myExams.map((e) => {
+      const r = passRate(e);
+      return `<div class="list-row click" data-exam="${attr(e.id)}">
+        <div class="grow"><div class="t">${esc(fmtDate(e.date))}${e.group ? ' · ' + esc(e.group) : ''}</div>
+          <div class="m">${e.passed} of ${e.sat} passed${Number(e.retake) ? ` · ${e.retake} retaking` : ''}${e.note ? ' · ' + esc(e.note.slice(0, 50)) : ''}</div></div>
+        <span class="pill ${r >= 70 ? 'ok' : r >= 40 ? 'warn' : 'bad'}">${r}%</span></div>`;
+    }).join('')}</div>`, { flush: true }) : ''}
+
+    ${myObs.length ? panel('Class observations', `<div class="list">${myObs.map((o) => {
+      const sc = obsScore(o);
+      return `<div class="list-row click" data-obs="${attr(o.id)}">
+        <div class="grow"><div class="t">${esc(fmtDate(o.date))}${o.group ? ' · ' + esc(o.group) : ''}${o.done ? '' : ' · scheduled'}</div>
+          <div class="m">${o.notes ? esc(o.notes.slice(0, 80)) : OBS_CRITERIA.filter(([k]) => (o.scores || {})[k]).map(([k, l]) => `${l} ${o.scores[k]}`).join(' · ') || 'not scored'}</div></div>
+        ${sc == null ? '' : `<span class="pill ${sc >= 4 ? 'ok' : sc >= 3 ? '' : 'bad'}">${sc} / 5</span>`}</div>`;
+    }).join('')}</div>`, { flush: true }) : ''}
 
     ${panel('Capture', `
       <div class="wrap" style="margin-bottom:8px">
@@ -1382,6 +1431,11 @@ function renderTeacherPage(view, r) {
   });
 
   $('#editteacher').addEventListener('click', () => editTeacherDialog(t));
+  $('#tcss').addEventListener('click', () => cssDialog(cssAt(t.id, monthKey(new Date())), t.id));
+  $('#texam').addEventListener('click', () => examResultDialog(null, t.id));
+  $('#tobs').addEventListener('click', () => observationDialog(null, t.id));
+  on('[data-exam]', 'click', (e, el) => { const x = examRows().find((y) => y.id === el.dataset.exam); if (x) examResultDialog(x); }, view);
+  on('[data-obs]', 'click', (e, el) => { const x = obsRows().find((y) => y.id === el.dataset.obs); if (x) observationDialog(x); }, view);
 
   // scorecard is derived from potentially large datasets — do it off the paint path
   setTimeout(() => {
@@ -1430,6 +1484,425 @@ function editTeacherDialog(t) {
   });
 }
 
+
+/* ========================================================== 5c. department ==
+   What running the department needs that a journal cannot hold: the CSS rate
+   you quote in every 1-1, exam results per teacher, class observations, and
+   which groups belong to whom.                                              */
+
+const dept = () => DB.dept;
+const cssRows = () => dept().css || [];
+const examRows = () => dept().exams || [];
+const obsRows = () => dept().observations || [];
+const groupRows = () => dept().groups || [];
+const cssStandard = () => Number(dept().standard) || 80;
+
+const OBS_CRITERIA = [
+  ['engagement', 'Engagement'],
+  ['explanation', 'Explaining the topic'],
+  ['pacing', 'Pacing'],
+  ['management', 'Classroom management'],
+  ['materials', 'Use of materials'],
+];
+
+/** The last n month keys, oldest first. */
+function lastMonths(n) {
+  const out = [];
+  const d = new Date();
+  for (let i = n - 1; i >= 0; i--) out.push(monthKey(new Date(d.getFullYear(), d.getMonth() - i, 1)));
+  return out;
+}
+const deptMonthName = (mk) => {
+  const [y, m] = mk.split('-').map(Number);
+  return `${MONTHS[m - 1]} ${y}`;
+};
+const monthShort = (mk) => MONTHS[Number(mk.split('-')[1]) - 1].slice(0, 3);
+
+/* ---- CSS ---- */
+const cssFor = (tid) => cssRows().filter((c) => c.teacherId === tid).sort((a, b) => a.month.localeCompare(b.month));
+const cssAt = (tid, mk) => cssRows().find((c) => c.teacherId === tid && c.month === mk);
+const cssLatest = (tid) => cssFor(tid).slice(-1)[0] || null;
+/** Department average for a month, across whoever has a figure. */
+function cssMonthAvg(mk) {
+  const vals = cssRows().filter((c) => c.month === mk).map((c) => Number(c.rate)).filter(Number.isFinite);
+  return vals.length ? round(mean(vals), 1) : null;
+}
+const belowStandard = (tid) => { const c = cssLatest(tid); return c && Number(c.rate) < cssStandard(); };
+
+/* ---- exams ---- */
+const examsFor = (tid) => examRows().filter((e) => e.teacherId === tid).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+const passRate = (e) => (Number(e.sat) ? Math.round((Number(e.passed) / Number(e.sat)) * 100) : null);
+/** Pass rate across a set of sittings, weighted by how many actually sat. */
+function poolPassRate(list) {
+  const sat = sum(list.map((e) => Number(e.sat) || 0));
+  const passed = sum(list.map((e) => Number(e.passed) || 0));
+  return sat ? { sat, passed, pct: Math.round((passed / sat) * 100) } : null;
+}
+
+/* ---- observations ---- */
+const obsFor = (tid) => obsRows().filter((o) => o.teacherId === tid).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+const obsScore = (o) => {
+  const vals = OBS_CRITERIA.map(([k]) => Number((o.scores || {})[k])).filter((v) => v >= 1);
+  return vals.length ? round(mean(vals), 1) : null;
+};
+const obsPending = () => obsRows().filter((o) => !o.done).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+/* ---- groups ---- */
+const groupsFor = (tid) => groupRows().filter((g) => g.teacherId === tid);
+/** The teacher record keeps a flat list of group names so the CSV scorecard can
+ *  still attribute group-only files. The register is the source of truth. */
+function syncTeacherGroups() {
+  DB.teachers.forEach((t) => {
+    const names = groupsFor(t.id).map((g) => g.name);
+    if (names.length) t.groups = names;
+  });
+}
+
+/* ---- 1-1 coverage ---- */
+/** Which months a teacher has at least one journal entry in. */
+const sessionMonths = (t) => new Set((t.entries || []).map((e) => String(e.date || '').slice(0, 7)).filter(Boolean));
+/** Share of the last n months in which every active teacher was seen at least once. */
+function coverage(months) {
+  const act = activeTeachers();
+  if (!act.length) return { pct: 0, seen: 0, total: 0 };
+  let seen = 0;
+  act.forEach((t) => { const ms = sessionMonths(t); months.forEach((m) => { if (ms.has(m)) seen++; }); });
+  const total = act.length * months.length;
+  return { pct: total ? Math.round((seen / total) * 100) : 0, seen, total };
+}
+
+/* ---- dialogs ---- */
+
+const teacherOptions = (sel) => activeTeachers()
+  .map((t) => `<option value="${attr(t.id)}"${t.id === sel ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
+
+function cssDialog(existing, presetTeacher) {
+  const c = existing || { id: uid(), teacherId: presetTeacher || (activeTeachers()[0] || {}).id || '',
+    month: monthKey(new Date()), rate: '', note: '' };
+  if (!activeTeachers().length) { toast('Add a teacher first.', 'bad'); return; }
+  openDialog({
+    title: existing ? 'Edit CSS rate' : 'Record a CSS rate',
+    body: `
+      <label class="f"><span>Teacher</span><select name="teacherId">${teacherOptions(c.teacherId)}</select></label>
+      <div class="row">
+        <label class="f"><span>Month</span><input name="month" type="month" value="${attr(c.month)}"></label>
+        <label class="f"><span>CSS rate (%)</span><input name="rate" inputmode="decimal" value="${attr(c.rate)}" placeholder="e.g. 86"></label>
+      </div>
+      <label class="f"><span>Note</span><input name="note" value="${attr(c.note || '')}" placeholder="What drove it"></label>
+      <p class="mini">The department standard is ${cssStandard()}% — anything under it is flagged. Change it on this page under Standard.</p>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delcss">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delcss', dlg);
+      if (del) del.addEventListener('click', () => {
+        dept().css = cssRows().filter((x) => x.id !== c.id);
+        close(); saveRender('dept');
+      });
+    },
+    onSubmit: (d) => {
+      const rate = Number(d.rate);
+      if (!d.teacherId) { toast('Pick a teacher.', 'bad'); return false; }
+      if (!Number.isFinite(rate) || rate < 0 || rate > 100) { toast('CSS rate must be a number between 0 and 100.', 'bad'); return false; }
+      if (!/^\d{4}-\d{2}$/.test(d.month)) { toast('Pick a month.', 'bad'); return false; }
+      const clash = cssRows().find((x) => x.id !== c.id && x.teacherId === d.teacherId && x.month === d.month);
+      if (clash) { toast('That teacher already has a figure for that month — edit it instead.', 'bad'); return false; }
+      Object.assign(c, { teacherId: d.teacherId, month: d.month, rate, note: d.note.trim() });
+      if (!existing) dept().css.push(c);
+      saveRender('dept');
+    },
+  });
+}
+
+function examResultDialog(existing, presetTeacher) {
+  const e = existing || { id: uid(), teacherId: presetTeacher || (activeTeachers()[0] || {}).id || '',
+    group: '', date: todayISO(), sat: '', passed: '', retake: '', note: '' };
+  if (!activeTeachers().length) { toast('Add a teacher first.', 'bad'); return; }
+  const groupList = groupRows().map((g) => `<option value="${attr(g.name)}">`).join('');
+  openDialog({
+    title: existing ? 'Edit exam result' : 'Record an exam result',
+    body: `
+      <div class="row">
+        <label class="f"><span>Teacher</span><select name="teacherId">${teacherOptions(e.teacherId)}</select></label>
+        <label class="f"><span>Group</span><input name="group" value="${attr(e.group)}" list="grouplist" placeholder="which group sat it"></label>
+      </div>
+      <datalist id="grouplist">${groupList}</datalist>
+      <div class="row">
+        <label class="f"><span>Date of the sitting</span><input name="date" type="date" value="${attr(e.date)}"></label>
+        <label class="f"><span>Sat</span><input name="sat" inputmode="numeric" value="${attr(e.sat)}" placeholder="20"></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Passed</span><input name="passed" inputmode="numeric" value="${attr(e.passed)}" placeholder="5"></label>
+        <label class="f"><span>Retaking</span><input name="retake" inputmode="numeric" value="${attr(e.retake || '')}" placeholder="9"></label>
+      </div>
+      <label class="f"><span>Note</span><textarea name="note" rows="2" placeholder="What the result turned on">${esc(e.note || '')}</textarea></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delexam">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delexam', dlg);
+      if (del) del.addEventListener('click', () => {
+        dept().exams = examRows().filter((x) => x.id !== e.id);
+        close(); saveRender('dept');
+      });
+    },
+    onSubmit: (d) => {
+      const sat = Number(d.sat), passed = Number(d.passed), retake = Number(d.retake || 0);
+      if (!d.teacherId) { toast('Pick a teacher.', 'bad'); return false; }
+      if (!d.date) { toast('A sitting needs a date.', 'bad'); return false; }
+      if (!Number.isFinite(sat) || sat <= 0) { toast('How many sat the exam?', 'bad'); return false; }
+      if (!Number.isFinite(passed) || passed < 0) { toast('How many passed?', 'bad'); return false; }
+      if (passed > sat) { toast('More passed than sat — check the numbers.', 'bad'); return false; }
+      if (passed + retake > sat) { toast('Passed plus retaking is more than the number who sat.', 'bad'); return false; }
+      Object.assign(e, { teacherId: d.teacherId, group: d.group.trim(), date: d.date, sat, passed, retake, note: d.note.trim() });
+      if (!existing) dept().exams.push(e);
+      saveRender('dept');
+    },
+  });
+}
+
+function observationDialog(existing, presetTeacher) {
+  const o = existing || { id: uid(), teacherId: presetTeacher || (activeTeachers()[0] || {}).id || '',
+    date: todayISO(), group: '', scores: {}, notes: '', actions: '', done: false };
+  if (!activeTeachers().length) { toast('Add a teacher first.', 'bad'); return; }
+  const scale = (k) => `<label class="f"><span>${esc((OBS_CRITERIA.find((x) => x[0] === k) || ['', k])[1])}</span>
+    <select name="s_${k}">
+      <option value="">— not scored —</option>
+      ${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${Number((o.scores || {})[k]) === n ? ' selected' : ''}>${n}</option>`).join('')}
+    </select></label>`;
+  openDialog({
+    title: existing ? 'Class observation' : 'Schedule or record an observation',
+    wide: true,
+    body: `
+      <div class="row">
+        <label class="f"><span>Teacher</span><select name="teacherId">${teacherOptions(o.teacherId)}</select></label>
+        <label class="f"><span>Date</span><input name="date" type="date" value="${attr(o.date)}"></label>
+        <label class="f"><span>Group</span><input name="group" value="${attr(o.group || '')}" list="grouplist2"></label>
+      </div>
+      <datalist id="grouplist2">${groupRows().map((g) => `<option value="${attr(g.name)}">`).join('')}</datalist>
+      <label class="f"><span><input type="checkbox" name="done"${o.done ? ' checked' : ''}> Already observed</span></label>
+      <p class="mini b" style="margin:12px 0 6px">SCORES · 1 to 5, leave blank if you did not look at it</p>
+      <div class="row">${OBS_CRITERIA.slice(0, 3).map(([k]) => scale(k)).join('')}</div>
+      <div class="row">${OBS_CRITERIA.slice(3).map(([k]) => scale(k)).join('')}<div style="flex:1"></div></div>
+      <label class="f"><span>What you saw</span><textarea name="notes" rows="3">${esc(o.notes || '')}</textarea></label>
+      <label class="f"><span>What they agreed to change</span><textarea name="actions" rows="2">${esc(o.actions || '')}</textarea></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delobs">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delobs', dlg);
+      if (del) del.addEventListener('click', () => {
+        dept().observations = obsRows().filter((x) => x.id !== o.id);
+        close(); saveRender('dept');
+      });
+    },
+    onSubmit: (d) => {
+      if (!d.teacherId) { toast('Pick a teacher.', 'bad'); return false; }
+      if (!d.date) { toast('An observation needs a date.', 'bad'); return false; }
+      const scores = {};
+      OBS_CRITERIA.forEach(([k]) => { const v = Number(d['s_' + k]); if (v >= 1 && v <= 5) scores[k] = v; });
+      Object.assign(o, { teacherId: d.teacherId, date: d.date, group: d.group.trim(),
+        scores, notes: d.notes.trim(), actions: d.actions.trim(), done: !!d.done });
+      if (!existing) dept().observations.push(o);
+      saveRender('dept');
+    },
+  });
+}
+
+function groupDialog(existing) {
+  const g = existing || { id: uid(), name: '', teacherId: '', level: '', students: '', note: '' };
+  openDialog({
+    title: existing ? 'Edit group' : 'Add a group',
+    body: `
+      <div class="row">
+        <label class="f"><span>Group name</span><input name="name" value="${attr(g.name)}" placeholder="G-12A"></label>
+        <label class="f"><span>Students</span><input name="students" inputmode="numeric" value="${attr(g.students)}" placeholder="18"></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Teacher</span><select name="teacherId"><option value="">— unassigned —</option>${teacherOptions(g.teacherId)}</select></label>
+        <label class="f"><span>Level</span><input name="level" value="${attr(g.level || '')}" placeholder="SAT level 4"></label>
+      </div>
+      <label class="f"><span>Note</span><input name="note" value="${attr(g.note || '')}"></label>
+      <p class="mini">Group names here are copied onto the teacher record, so exam and survey CSVs that
+      only name a group still attribute to the right person on their scorecard.</p>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delgroup">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delgroup', dlg);
+      if (del) del.addEventListener('click', () => {
+        dept().groups = groupRows().filter((x) => x.id !== g.id);
+        syncTeacherGroups();
+        close(); saveRender('dept', 'teachers');
+      });
+    },
+    onSubmit: (d) => {
+      const name = d.name.trim();
+      if (!name) { toast('A group needs a name.', 'bad'); return false; }
+      const clash = groupRows().find((x) => x.id !== g.id && norm(x.name) === norm(name));
+      if (clash) { toast('There is already a group with that name.', 'bad'); return false; }
+      Object.assign(g, { name, teacherId: d.teacherId, level: d.level.trim(),
+        students: d.students.trim(), note: d.note.trim() });
+      if (!existing) dept().groups.push(g);
+      syncTeacherGroups();
+      saveRender('dept', 'teachers');
+    },
+  });
+}
+
+function standardDialog() {
+  openDialog({
+    title: 'Department standard',
+    body: `<label class="f"><span>CSS rate a teacher is expected to hold (%)</span>
+      <input name="standard" inputmode="numeric" value="${attr(cssStandard())}"></label>
+      <p class="mini">Anything below this is flagged on the department page and on the teacher's own page.</p>`,
+    onSubmit: (d) => {
+      const n = Number(d.standard);
+      if (!Number.isFinite(n) || n < 0 || n > 100) { toast('A percentage between 0 and 100.', 'bad'); return false; }
+      dept().standard = n;
+      saveRender('dept');
+    },
+  });
+}
+
+/* ---- the department page ---- */
+
+function renderDept(view) {
+  const act = activeTeachers();
+  const months = lastMonths(8);
+  const thisMonth = monthKey(new Date());
+  const cov = coverage(months);
+  const avg = cssMonthAvg(thisMonth) ?? cssMonthAvg(months[months.length - 2]);
+  const below = act.filter((t) => belowStandard(t.id));
+  const recentExams = [...examRows()].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const pool = poolPassRate(recentExams.slice(0, 12));
+  const pending = obsPending();
+  const seenThisMonth = act.filter((t) => sessionMonths(t).has(thisMonth));
+  const notSeen = act.filter((t) => !sessionMonths(t).has(thisMonth));
+
+  topbar('Department', {
+    actions: `<button class="btn ghost sm" id="setstandard">Standard · ${cssStandard()}%</button>
+      <button class="btn sm" id="newgroup">+ Group</button>
+      <button class="btn sm" id="newobs">+ Observation</button>
+      <button class="btn sm" id="newexam">+ Exam result</button>
+      <button class="btn primary" id="newcss">+ CSS rate</button>`,
+  });
+
+  if (!act.length) {
+    view.innerHTML = emptyState('No teachers yet',
+      'The department page is built out of your team — add teachers on the 1-1s page and everything here fills in.',
+      `<button class="btn sm" data-goto="work/teachers">Go to 1-1s</button>`);
+    on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
+    return;
+  }
+
+  const lines = [];
+  if (notSeen.length) lines.push({ kind: 'warn', html: `<b>${notSeen.length}</b> not seen this month` });
+  if (below.length) lines.push({ kind: 'bad', html: `<b>${below.length}</b> below the ${cssStandard()}% standard` });
+  if (pending.length) lines.push({ kind: '', html: `<b>${pending.length}</b> observation${pending.length === 1 ? '' : 's'} scheduled` });
+  if (!lines.length) lines.push({ kind: 'good', html: 'Everyone seen this month and holding the standard.' });
+
+  /* the grid he asked for: a dot per teacher per month */
+  const grid = `<div class="covgrid" style="--cov-months:${months.length}">
+    <div class="covrow covhead"><div class="covname"></div>
+      ${months.map((m) => `<div class="covcell covlab${m === thisMonth ? ' now' : ''}">${esc(monthShort(m))}</div>`).join('')}
+      <div class="covtot">sessions</div></div>
+    ${act.map((t) => {
+      const ms = sessionMonths(t);
+      const n = (t.entries || []).filter((e) => e.date).length;
+      return `<div class="covrow click" data-teacher="${attr(t.id)}">
+        <div class="covname">${esc(t.name)}</div>
+        ${months.map((m) => {
+          const hit = ms.has(m);
+          return `<div class="covcell${hit ? ' on' : ''}${m === thisMonth ? ' now' : ''}"
+            title="${attr(`${t.name} · ${deptMonthName(m)} · ${hit ? 'session logged' : 'no session'}`)}">${hit ? '●' : '·'}</div>`;
+        }).join('')}
+        <div class="covtot num">${n}</div></div>`;
+    }).join('')}
+  </div>`;
+
+  const cssTable = `<div class="scroll-x"><table class="data">
+    <thead><tr><th>Teacher</th>${months.slice(-6).map((m) => `<th class="n">${esc(monthShort(m))}</th>`).join('')}<th class="n">Trend</th></tr></thead>
+    <tbody>${act.map((t) => {
+      const series = months.slice(-6).map((m) => { const c = cssAt(t.id, m); return c ? Number(c.rate) : null; });
+      const last = cssLatest(t.id);
+      return `<tr class="click" data-teacher="${attr(t.id)}" style="cursor:pointer">
+        <td>${esc(t.name)}${last && Number(last.rate) < cssStandard() ? ' <span class="pill bad">below</span>' : ''}</td>
+        ${series.map((v, i) => `<td class="n"${v == null ? ' style="color:var(--tx-3)"' : v < cssStandard() ? ' style="color:var(--bad)"' : ''}
+          data-css="${attr(t.id)}" data-month="${attr(months.slice(-6)[i])}">${v == null ? '—' : v + '%'}</td>`).join('')}
+        <td class="n">${sparkline(series.filter((v) => v != null), { w: 70, h: 20 }) || '—'}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+
+  view.innerHTML = `
+    ${hero('The department', `${faceName('work')} · ${act.length} teacher${act.length === 1 ? '' : 's'}`, lines)}
+
+    <div class="stats">
+      ${statBox(`${seenThisMonth.length}/${act.length}`, 'seen this month',
+        notSeen.length ? `<div class="delta down">${esc(notSeen.map((t) => t.name).join(', ').slice(0, 40))}</div>` : `<div class="delta up">full coverage</div>`)}
+      ${statBox(avg == null ? '—' : avg + '%', 'average CSS',
+        avg == null ? `<div class="delta flat">nothing recorded</div>`
+          : `<div class="delta ${avg >= cssStandard() ? 'up' : 'down'}">standard ${cssStandard()}%</div>`)}
+      ${statBox(pool ? pool.pct + '%' : '—', 'exam pass rate',
+        pool ? `<div class="delta flat">${pool.passed} of ${pool.sat} across ${Math.min(recentExams.length, 12)} sitting${Math.min(recentExams.length, 12) === 1 ? '' : 's'}</div>` : `<div class="delta flat">no results yet</div>`)}
+      ${statBox(`${cov.pct}%`, '1-1 coverage', `<div class="delta flat">${cov.seen} of ${cov.total} teacher-months</div>`)}
+    </div>
+
+    ${panel('Sessions by month', grid, { sub: `A dot is a month with at least one 1-1 logged · last ${months.length} months` })}
+
+    ${panel('CSS rate', cssRows().length ? cssTable
+      : emptyState('No CSS rates recorded', `Record one figure per teacher per month and this becomes a trend you can act on. The standard is ${cssStandard()}%.`,
+        actBtn('Record a CSS rate', 'newcss')), { flush: cssRows().length > 0,
+      sub: cssRows().length ? 'Click a teacher for their page, or a cell to edit that month' : '' })}
+
+    <div class="grid g-side">
+      ${panel('Exam results', recentExams.length ? `<div class="list">${recentExams.slice(0, 10).map((e) => {
+        const t = teacherById(e.teacherId); const r = passRate(e);
+        return `<div class="list-row click" data-exam="${attr(e.id)}">
+          <div class="grow"><div class="t">${esc((t || {}).name || 'Unknown teacher')}${e.group ? ' · ' + esc(e.group) : ''}</div>
+            <div class="m">${esc(fmtDate(e.date))} · ${e.passed}/${e.sat} passed${Number(e.retake) ? ` · ${e.retake} retaking` : ''}</div></div>
+          <span class="pill ${r >= 70 ? 'ok' : r >= 40 ? 'warn' : 'bad'}">${r}%</span></div>`;
+      }).join('')}</div>` : emptyState('No exam results yet', 'Record a sitting — who sat, who passed, who is retaking — and pass rates build up per teacher.',
+        actBtn('Record a result', 'newexam')), { flush: recentExams.length > 0 })}
+
+      ${panel('Observations', obsRows().length ? `<div class="list">${[...obsRows()]
+        .sort((a, b) => Number(a.done) - Number(b.done) || String(b.date).localeCompare(String(a.date)))
+        .slice(0, 10).map((o) => {
+          const t = teacherById(o.teacherId); const sc = obsScore(o);
+          return `<div class="list-row click" data-obs="${attr(o.id)}">
+            <div class="grow"><div class="t">${esc((t || {}).name || 'Unknown teacher')}${o.group ? ' · ' + esc(o.group) : ''}</div>
+              <div class="m">${esc(fmtDate(o.date))}${o.done ? '' : ' · scheduled'}</div></div>
+            ${sc == null ? `<span class="pill ${o.done ? 'warn' : ''}">${o.done ? 'not scored' : esc(relDays(o.date))}</span>`
+              : `<span class="pill ${sc >= 4 ? 'ok' : sc >= 3 ? '' : 'bad'}">${sc} / 5</span>`}</div>`;
+        }).join('')}</div>` : emptyState('No observations yet', 'You have told two teachers to observe others. Record your own the same way — five criteria, one to five.',
+          actBtn('Add an observation', 'newobs')), { flush: obsRows().length > 0 })}
+    </div>
+
+    ${panel(`Groups · ${groupRows().length}`, groupRows().length ? `<div class="scroll-x"><table class="data">
+      <thead><tr><th>Group</th><th>Teacher</th><th>Level</th><th class="n">Students</th><th>Note</th></tr></thead>
+      <tbody>${[...groupRows()].sort((a, b) => a.name.localeCompare(b.name)).map((g) => {
+        const t = teacherById(g.teacherId);
+        return `<tr class="click" data-group="${attr(g.id)}" style="cursor:pointer">
+          <td><b>${esc(g.name)}</b></td>
+          <td>${t ? esc(t.name) : '<span class="mut">unassigned</span>'}</td>
+          <td>${esc(g.level || '')}</td>
+          <td class="n">${esc(g.students || '')}</td>
+          <td class="mut">${esc(g.note || '')}</td></tr>`;
+      }).join('')}</tbody></table></div>`
+      : emptyState('No groups registered', 'Listing groups here also lets the CSV scorecard attribute group-only exam files to the right teacher.',
+        actBtn('Add a group', 'newgroup')), { flush: groupRows().length > 0 })}`;
+
+  $('#newcss').addEventListener('click', () => cssDialog(null));
+  $('#newexam').addEventListener('click', () => examResultDialog(null));
+  $('#newobs').addEventListener('click', () => observationDialog(null));
+  $('#newgroup').addEventListener('click', () => groupDialog(null));
+  $('#setstandard').addEventListener('click', standardDialog);
+  const acts = { newcss: () => cssDialog(null), newexam: () => examResultDialog(null),
+    newobs: () => observationDialog(null), newgroup: () => groupDialog(null) };
+  on('[data-act]', 'click', (e, el) => { const fn = acts[el.dataset.act]; if (fn) fn(); }, view);
+  on('[data-css]', 'click', (e, el) => {
+    e.stopPropagation();
+    const row = cssAt(el.dataset.css, el.dataset.month);
+    if (row) cssDialog(row); else cssDialog(null, el.dataset.css);
+  }, view);
+  on('[data-teacher]', 'click', (e, el) => go(`work/teachers/${el.dataset.teacher}`), view);
+  on('[data-exam]', 'click', (e, el) => { const x = examRows().find((y) => y.id === el.dataset.exam); if (x) examResultDialog(x); }, view);
+  on('[data-obs]', 'click', (e, el) => { const x = obsRows().find((y) => y.id === el.dataset.obs); if (x) observationDialog(x); }, view);
+  on('[data-group]', 'click', (e, el) => { const x = groupRows().find((y) => y.id === el.dataset.group); if (x) groupDialog(x); }, view);
+  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
+}
+PAGES['work/dept'] = renderDept;
 /* ============================================================ 6. CSV reports */
 
 /** Papa with header:false, then objects built by hand so repeated Google-Forms
@@ -4834,6 +5307,7 @@ function renderSettings(view) {
         <div class="list-row"><div class="grow">Teachers</div><span class="num">${DB.teachers.length}</span></div>
         <div class="list-row"><div class="grow">Tasks</div><span class="num">${DB.tasks.length}</span></div>
         <div class="list-row"><div class="grow">Datasets</div><span class="num">${DB.datasets.length}</span></div>
+        <div class="list-row"><div class="grow">Department</div><span class="num">${cssRows().length} CSS <span class="mut">· ${examRows().length} exams · ${obsRows().length} obs · ${groupRows().length} groups</span></span></div>
         <div class="list-row"><div class="grow">Course files</div><span class="num">${uniFiles().length}${uniFiles().some((f) => f.kind === 'file') ? ` <span class="mut">· ${fileSize(sum(uniFiles().filter((f) => f.kind === 'file').map((f) => Number(f.size) || 0)))}</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Transactions</div><span class="num">${(DB.finances.tx || []).length}</span></div>
         <div class="list-row"><div class="grow">Habits</div><span class="num">${habitItems(true).length}${Object.keys(DB.habits.ticks || {}).length ? ` <span class="mut">· ${Object.keys(DB.habits.ticks).length} days ticked</span>` : ''}</span></div>
@@ -6886,6 +7360,10 @@ function paletteItems() {
   add('action', 'New recommender', 'Someone writing you a letter', () => recDialog(null), 4);
   add('action', 'Add a test score', 'IELTS, SAT, whatever they ask for', () => testDialog(null), 4);
   add('action', 'Log a 1-1', 'Open a teacher journal', () => go('work/teachers'), 4);
+  add('action', 'Record a CSS rate', 'One figure per teacher per month', () => cssDialog(null), 5);
+  add('action', 'Record an exam result', 'Sat, passed, retaking', () => examResultDialog(null), 4);
+  add('action', 'Class observation', 'Schedule one or write one up', () => observationDialog(null), 4);
+  add('action', 'Add a group', 'The department register', () => groupDialog(null), 3);
   add('action', 'Upload a CSV', 'Exam export or the quality survey', () => go('work/reports'), 4);
   add('action', 'Course files', 'The shelf on a course page', () => go('uni/courses'), 4);
 

@@ -2,7 +2,8 @@
 
 A private, single-user operations dashboard with three faces and a set of shared modules.
 
-* **Work** — head of the English department at an SAT-prep school: overview, teacher 1-1 journals, tasks, CSV report engines.
+* **Work** — head of the English department at an SAT-prep school: overview, teacher 1-1 journals, a department page
+  (CSS rates, exam results, class observations, the group register), tasks, CSV report engines.
 * **CAU** (Central Asian University) — overview, timetable, courses with their own folders of files, tasks, lecture notes (*Konspekty*).
 * **Apply** — the admissions cycle: universities and scholarships, requirement checklists, essays, recommenders,
   tests and scores, its own task board.
@@ -210,6 +211,32 @@ one is frequency and nothing cleverer: stopwords and the words that are structur
 (*students, class, group, topics…*) are dropped, words shorter than five letters are ignored, and a phrase always beats
 the single words inside it, so what is left tends to be an actual theme. It is labelled on the page as a signal to look
 at rather than an analysis.
+
+### Running the department
+
+`Work → Department` holds the things a head of department quotes constantly but a journal cannot keep.
+
+**Sessions by month.** A grid of every active teacher against the last eight months, a dot where a 1-1 was logged, and
+the running total per person. The current month is picked out. Coverage across the grid is stated as a percentage of
+teacher-months, so "17%" means that out of every teacher × every month, that is the share actually covered.
+
+**CSS rate.** One figure per teacher per month against a department standard set once (default 80%). Entering two
+figures for the same teacher and month is refused — edit the existing one. The table shows the last six months with
+anything under the standard in red and a sparkline per teacher; each teacher's own page carries the full trend.
+
+**Exam results.** A sitting per row: teacher, group, date, how many sat, how many passed, how many are retaking. Pass
+rates are weighted by the number who actually sat rather than averaged across sittings. The arithmetic is checked on
+the way in — more passed than sat, or passed plus retaking exceeding the number who sat, is rejected.
+
+**Class observations.** Scheduled or written up, scored one to five on five criteria — engagement, explaining the
+topic, pacing, classroom management, use of materials — with what you saw and what they agreed to change. Any
+criterion can be left unscored and the average ignores it.
+
+**Groups.** Which group belongs to whom, its level and size. Group names are mirrored onto the teacher record, so the
+CSV scorecard can still attribute exam and survey files that name only a group.
+
+Each teacher's own page gains the same figures for them alone: latest CSS against the standard, pass rate across all
+their sittings, observations, groups, and a CSS trend once there are two months to compare.
 
 ### The weekly review
 
