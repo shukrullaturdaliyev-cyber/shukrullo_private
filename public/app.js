@@ -263,6 +263,7 @@ const PASS_KEY = 'desk:pass';
 const DEFAULTS = () => ({
   settings: {
     name: 'Shukrullo',
+    role: 'Head of Department',
     currency: 'UZS',
     usdRate: 11850,
     semStart: '',
@@ -283,7 +284,7 @@ const DEFAULTS = () => ({
   goals: { items: [], reviews: [] },
   health: { days: [] },
   admissions: { apps: [], essays: [], recommenders: [], tests: [] },
-  dept: { standard: 80, css: [], exams: [], observations: [], groups: [] },
+  dept: { standard: 80, css: [], exams: [], observations: [], groups: [], commentary: {} },
 });
 
 let DB = DEFAULTS();
@@ -388,9 +389,10 @@ async function loadAll() {
   if (!Array.isArray(DB.goals.reviews)) DB.goals.reviews = [];
   DB.health = Object.assign({ days: [] }, DB.health || {});
   if (!Array.isArray(DB.health.days)) DB.health.days = [];
-  DB.dept = Object.assign({ standard: 80, css: [], exams: [], observations: [], groups: [] }, DB.dept || {});
+  DB.dept = Object.assign({ standard: 80, css: [], exams: [], observations: [], groups: [], commentary: {} }, DB.dept || {});
   ['css', 'exams', 'observations', 'groups'].forEach((k) => { if (!Array.isArray(DB.dept[k])) DB.dept[k] = []; });
   if (!Number.isFinite(Number(DB.dept.standard))) DB.dept.standard = 80;
+  if (!DB.dept.commentary || typeof DB.dept.commentary !== 'object') DB.dept.commentary = {};
   DB.admissions = Object.assign({ apps: [], essays: [], recommenders: [], tests: [] }, DB.admissions || {});
   ['apps', 'essays', 'recommenders', 'tests'].forEach((k) => { if (!Array.isArray(DB.admissions[k])) DB.admissions[k] = []; });
   DB.admissions.apps.forEach((a) => {
@@ -584,8 +586,9 @@ const NAV = {
     { id: 'overview', label: 'Overview', ico: '◇' },
     { id: 'teachers', label: '1-1s', ico: '☺' },
     { id: 'dept', label: 'Department', ico: '◫' },
+    { id: 'brief', label: 'Reports', ico: '❖' },
     { id: 'tasks', label: 'Tasks', ico: '▤' },
-    { id: 'reports', label: 'Reports', ico: '▦' },
+    { id: 'reports', label: 'Data files', ico: '▦' },
   ],
   uni: [
     { id: 'overview', label: 'Overview', ico: '◇' },
@@ -742,7 +745,7 @@ const PAGES = {}; // filled in by the module sections below
 
 /* Dense pages opt out of the reading measure the editorial layout imposes. */
 const WIDE_PAGES = new Set(['shared/calendar', 'shared/notes', 'uni/timetable', 'uni/konspekty',
-  'work/reports', 'work/tasks', 'uni/tasks', 'adm/tasks']);
+  'work/reports', 'work/brief', 'work/tasks', 'uni/tasks', 'adm/tasks']);
 
 function render() {
   const r = route();
@@ -1496,6 +1499,9 @@ const examRows = () => dept().exams || [];
 const obsRows = () => dept().observations || [];
 const groupRows = () => dept().groups || [];
 const cssStandard = () => Number(dept().standard) || 80;
+/** The head of department's own words on a period — the only prose on the
+ *  report the desk does not derive from the record. Keyed by period param. */
+const commentary = (key) => String((dept().commentary || {})[key] || '').trim();
 
 const OBS_CRITERIA = [
   ['engagement', 'Engagement'],
@@ -1903,6 +1909,511 @@ function renderDept(view) {
   on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
 }
 PAGES['work/dept'] = renderDept;
+
+/* ================================ 5c. the report that goes to top management */
+
+/** A reporting period — a calendar month, or a Monday-to-Sunday week.
+ *  It lives in the URL, so a filed report can be reopened at the same figures. */
+function reportPeriod(param) {
+  const raw = String(param || '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const from = toISO(weekStart(raw));
+    const to = toISO(addDays(fromISO(from), 6));
+    return {
+      kind: 'week', param: from, from, to,
+      label: `Week of ${fmtDate(from)}`,
+      range: `${fmtDate(from, { day: 'numeric', month: 'short' })} – ${fmtDate(to)}`,
+      file: `week-${from}`,
+    };
+  }
+  const mk = /^\d{4}-\d{2}$/.test(raw) ? raw : monthKey(new Date());
+  const [y, m] = mk.split('-').map(Number);
+  return {
+    kind: 'month', param: mk, mk, from: `${mk}-01`, to: toISO(new Date(y, m, 0)),
+    label: deptMonthName(mk), range: deptMonthName(mk), file: `month-${mk}`,
+  };
+}
+/** The same period n steps back or forward, as a URL param. */
+function shiftPeriod(p, n) {
+  if (p.kind === 'week') return toISO(addDays(fromISO(p.from), n * 7));
+  const [y, m] = p.mk.split('-').map(Number);
+  return monthKey(new Date(y, m - 1 + n, 1));
+}
+const periodHref = (param) => href(`work/brief/${param}`);
+/** Distinct days on which this teacher has a journal entry inside a window.
+ *  One day with entries is one sitting — that is what a 1-1 is on this desk. */
+function sessionDates(t, from, to) {
+  const seen = (t.entries || []).map((e) => e.date).filter((d) => d && d >= from && d <= to);
+  return [...new Set(seen)].sort();
+}
+/** Everyone who was on strength during the period, left teachers included. */
+function reportRoster(p) {
+  return DB.teachers.filter((t) => !t.left || t.left >= p.from)
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+/** Everything the report says about one teacher, all of it read off the record. */
+function teacherReport(t, p, prev) {
+  const within = (e) => e.date && e.date >= p.from && e.date <= p.to;
+  const entries = (t.entries || []).filter(within)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const before = (t.entries || []).map((e) => e.date).filter((d) => d && d < p.from).sort();
+  const dates = sessionDates(t, p.from, p.to);
+
+  const endMonth = monthKey(fromISO(p.to));
+  const upto = cssFor(t.id).filter((c) => c.month <= endMonth);
+  const cssNow = p.kind === 'month' ? (cssAt(t.id, p.mk) || null) : (upto.slice(-1)[0] || null);
+  const cssPrev = p.kind === 'month'
+    ? (cssAt(t.id, shiftPeriod(p, -1)) || null)
+    : (upto.filter((c) => !cssNow || c.month < cssNow.month).slice(-1)[0] || null);
+
+  const inWindow = (list, a, b) => list.filter((x) => x.date && x.date >= a && x.date <= b);
+  const exams = inWindow(examsFor(t.id), p.from, p.to);
+  const examsPrev = inWindow(examsFor(t.id), prev.from, prev.to);
+  const obs = inWindow(obsFor(t.id).filter((o) => o.done), p.from, p.to);
+  const obsPrev = inWindow(obsFor(t.id).filter((o) => o.done), prev.from, prev.to);
+
+  const isTask = (e) => e.kind === 'task_me' || e.kind === 'task_them';
+  return {
+    t,
+    dates,
+    entries,
+    talk: entries.filter((e) => e.kind === 'note' || e.kind === 'feedback'),
+    set: entries.filter(isTask),
+    carried: (t.entries || []).filter((e) => isTask(e) && !e.done && e.date && e.date < p.from)
+      .sort((a, b) => String(a.date).localeCompare(String(b.date))),
+    lastBefore: before.length ? before[before.length - 1] : null,
+    prevCount: sessionDates(t, prev.from, prev.to).length,
+    cssNow,
+    cssPrev,
+    exams,
+    examsPrev,
+    pass: poolPassRate(exams),
+    passPrev: poolPassRate(examsPrev),
+    obs,
+    obsAvg: obs.length ? round(mean(obs.map(obsScore).filter((v) => v != null)), 1) : null,
+    obsPrevAvg: obsPrev.length ? round(mean(obsPrev.map(obsScore).filter((v) => v != null)), 1) : null,
+    groups: groupsFor(t.id),
+  };
+}
+
+/** The whole department for the period, plus the period before it to compare. */
+function reportFacts(p) {
+  const prev = reportPeriod(shiftPeriod(p, -1));
+  const rows = reportRoster(p).map((t) => teacherReport(t, p, prev));
+  const seen = rows.filter((x) => x.dates.length);
+  const sittings = sum(rows.map((x) => x.dates.length));
+  const prevSittings = sum(rows.map((x) => x.prevCount));
+
+  const cssVals = rows.map((x) => x.cssNow).filter(Boolean).map((c) => Number(c.rate)).filter(Number.isFinite);
+  const cssPrevVals = rows.map((x) => x.cssPrev).filter(Boolean).map((c) => Number(c.rate)).filter(Number.isFinite);
+  const below = rows.filter((x) => x.cssNow && Number(x.cssNow.rate) < cssStandard());
+
+  const allExams = rows.flatMap((x) => x.exams);
+  const allObs = rows.flatMap((x) => x.obs);
+  const setNow = rows.flatMap((x) => x.set);
+
+  return {
+    p,
+    prev,
+    rows,
+    seen,
+    sittings,
+    prevSittings,
+    coverage: rows.length ? Math.round((seen.length / rows.length) * 100) : 0,
+    prevCoverage: rows.length ? Math.round((rows.filter((x) => x.prevCount).length / rows.length) * 100) : 0,
+    cssAvg: cssVals.length ? round(mean(cssVals), 1) : null,
+    cssPrevAvg: cssPrevVals.length ? round(mean(cssPrevVals), 1) : null,
+    cssCount: cssVals.length,
+    cssPrevCount: cssPrevVals.length,
+    below,
+    belowPrev: rows.filter((x) => x.cssPrev && Number(x.cssPrev.rate) < cssStandard()).length,
+    pass: poolPassRate(allExams),
+    passPrev: poolPassRate(rows.flatMap((x) => x.examsPrev)),
+    exams: allExams,
+    obs: allObs,
+    obsAvg: allObs.length ? round(mean(allObs.map(obsScore).filter((v) => v != null)), 1) : null,
+    set: setNow,
+    closed: setNow.filter((e) => e.done),
+    carried: rows.flatMap((x) => x.carried),
+  };
+}
+
+/* ---- the report as a small document, so one build serves screen, clipboard,
+ *      a Markdown file and the printer without three sets of wording ---- */
+
+const RB = {
+  h: (text, opts = {}) => ({ t: 'h', text, level: opts.level || 2, sub: opts.sub || '' }),
+  p: (text) => ({ t: 'p', text }),
+  note: (text) => ({ t: 'note', text }),
+  stats: (items) => ({ t: 'stats', items: items.filter(Boolean) }),
+  lines: (items) => ({ t: 'lines', items: items.filter(Boolean) }),
+  table: (head, rows) => ({ t: 'table', head, rows }),
+};
+
+const upFirst = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+const dayShort = (iso) => fmtDate(iso, { day: 'numeric', month: 'short' });
+const kindLabel = (k) => (KINDS.find((x) => x[0] === k) || ['', 'Note'])[1];
+const ownerLabel = (k) => (k === 'task_me' ? 'me' : 'them');
+const movedBy = (now, prev, unit = '') => {
+  if (now == null || prev == null) return '—';
+  const d = round(now - prev, 1);
+  if (!d) return 'level';
+  return `${d > 0 ? '+' : '−'}${Math.abs(d)}${unit}`;
+};
+
+/** One plain sentence of where a teacher stands, built only from figures that exist. */
+function signalSentence(x) {
+  const bits = [];
+  if (x.cssNow) {
+    const now = Number(x.cssNow.rate);
+    let s = `CSS ${now}% in ${deptMonthName(x.cssNow.month)}`;
+    if (x.cssPrev) {
+      const d = round(now - Number(x.cssPrev.rate), 1);
+      s += d === 0 ? `, level on ${deptMonthName(x.cssPrev.month)}`
+        : `, ${d > 0 ? 'up' : 'down'} ${Math.abs(d)} on ${deptMonthName(x.cssPrev.month)}`;
+    }
+    if (now < cssStandard()) s += ` — under the ${cssStandard()}% standard`;
+    bits.push(s);
+  }
+  if (x.pass) {
+    let s = `exam pass rate ${x.pass.pct}% (${x.pass.passed} of ${x.pass.sat})`;
+    if (x.passPrev) {
+      const d = x.pass.pct - x.passPrev.pct;
+      s += d === 0 ? ', unchanged' : `, ${d > 0 ? 'up' : 'down'} ${Math.abs(d)} points`;
+    }
+    bits.push(s);
+  }
+  if (x.obsAvg != null) {
+    let s = `observed at ${x.obsAvg} out of 5`;
+    const d = x.obsPrevAvg == null ? 0 : round(x.obsAvg - x.obsPrevAvg, 1);
+    if (d) s += `, ${d > 0 ? 'up' : 'down'} ${Math.abs(d)}`;
+    bits.push(s);
+  }
+  if (x.set.length) {
+    const done = x.set.filter((e) => e.done).length;
+    bits.push(`${done} of ${x.set.length} action${x.set.length === 1 ? '' : 's'} set here already closed`);
+  }
+  if (x.carried.length) bits.push(`${x.carried.length} action${x.carried.length === 1 ? '' : 's'} still open from before`);
+  return bits.length ? upFirst(bits.join('; ')) + '.' : '';
+}
+
+/** What a teacher's row says in the coverage table. */
+function coverageRow(x) {
+  const css = x.cssNow ? `${x.cssNow.rate}%${Number(x.cssNow.rate) < cssStandard() ? ' ▼' : ''}` : '—';
+  return [
+    x.t.name + (x.t.left ? ' (left)' : ''),
+    x.t.teaches || '—',
+    (x.groups.length ? x.groups.map((g) => g.name) : (x.t.groups || [])).join(', ') || '—',
+    String(x.dates.length),
+    x.dates.length ? dayShort(x.dates[x.dates.length - 1])
+      : x.lastBefore ? `${dayShort(x.lastBefore)} · ${daysBetween(fromISO(x.lastBefore), new Date())}d ago` : 'never',
+    css,
+    x.pass ? `${x.pass.pct}%` : '—',
+    x.obsAvg != null ? `${x.obsAvg}/5` : '—',
+  ];
+}
+
+function reportDoc(f) {
+  const p = f.p;
+  const doc = [];
+  const standard = cssStandard();
+  // CSS is recorded by month, so inside a weekly report it has to say which
+  // month it is quoting — otherwise a September figure reads as last week's.
+  const basis = (pick) => {
+    if (p.kind !== 'week') return '';
+    const months = [...new Set(f.rows.map(pick).filter(Boolean).map((c) => c.month))];
+    return months.length === 1 ? ` (${deptMonthName(months[0])})` : months.length ? ' (latest monthly figures)' : '';
+  };
+  const basisNow = basis((x) => x.cssNow);
+  const basisPrev = basis((x) => x.cssPrev);
+
+  doc.push(RB.stats([
+    { v: String(f.sittings), l: p.kind === 'week' ? '1-1s this week' : '1-1s this month', d: movedBy(f.sittings, f.prevSittings) + ' vs prev' },
+    { v: `${f.seen.length}/${f.rows.length}`, l: 'teachers seen', d: `${f.coverage}% of the department` },
+    { v: f.cssAvg == null ? '—' : `${f.cssAvg}%`, l: 'average CSS',
+      d: f.cssAvg == null ? 'nothing recorded'
+        : `standard ${standard}%${basisNow || ` · ${movedBy(f.cssAvg, f.cssPrevAvg)} vs prev`}` },
+    { v: f.pass ? `${f.pass.pct}%` : '—', l: 'exam pass rate', d: f.pass ? `${f.pass.passed} of ${f.pass.sat} sat` : 'no sittings' },
+    { v: `${f.closed.length}/${f.set.length}`, l: 'actions closed', d: f.carried.length ? `${f.carried.length} open from before` : 'nothing carried over' },
+  ]));
+
+  const say = commentary(p.param);
+  if (say) {
+    doc.push(RB.h('Summary'));
+    doc.push(RB.p(say));
+  }
+
+  /* --- who was seen --- */
+  doc.push(RB.h('Coverage'));
+  if (f.rows.length) {
+    doc.push(RB.table(['Teacher', 'Subject', 'Groups', '1-1s', 'Last 1-1', 'CSS', 'Exam pass', 'Observation'],
+      f.rows.map(coverageRow)));
+  } else {
+    doc.push(RB.note('No teachers on the register for this period.'));
+  }
+
+  const missed = f.rows.filter((x) => !x.dates.length);
+  if (missed.length) {
+    doc.push(RB.h('Not seen in this period', { level: 3 }));
+    doc.push(RB.lines(missed.map((x) => ({
+      label: x.t.name,
+      text: x.lastBefore
+        ? `last 1-1 ${fmtDate(x.lastBefore)} — ${daysBetween(fromISO(x.lastBefore), new Date())} days ago`
+        : 'no 1-1 on record',
+      tag: 'warn',
+    }))));
+  }
+
+  /* --- what was said --- */
+  doc.push(RB.h('The one-to-ones'));
+  if (!f.seen.length) {
+    doc.push(RB.note(`No 1-1 was logged between ${fmtDate(p.from)} and ${fmtDate(p.to)}.`));
+  }
+  f.seen.forEach((x) => {
+    doc.push(RB.h(x.t.name + (x.t.teaches ? ` — ${x.t.teaches}` : ''), {
+      level: 3,
+      sub: `${x.dates.length} session${x.dates.length === 1 ? '' : 's'} · ${x.dates.map(dayShort).join(', ')}`
+        + (x.lastBefore ? ` · previous 1-1 ${fmtDate(x.lastBefore)}` : ' · first 1-1 on record'),
+    }));
+    if (x.talk.length) {
+      doc.push(RB.lines(x.talk.map((e) => ({
+        label: `${dayShort(e.date)} · ${kindLabel(e.kind)}`,
+        text: e.text,
+      }))));
+    } else {
+      doc.push(RB.note('Actions only — nothing written up from the conversation.'));
+    }
+    if (x.set.length) {
+      doc.push(RB.lines(x.set.map((e) => ({
+        label: `Action for ${ownerLabel(e.kind)}`,
+        text: e.text,
+        tag: e.done ? 'ok' : 'open',
+      }))));
+    }
+    const s = signalSentence(x);
+    if (s) doc.push(RB.p(s));
+  });
+
+  /* --- the actions, in one place for management --- */
+  const actions = f.rows.flatMap((x) => [
+    ...x.set.map((e) => ({ x, e, carried: false })),
+    ...x.carried.map((e) => ({ x, e, carried: true })),
+  ]);
+  doc.push(RB.h('Actions'));
+  if (actions.length) {
+    doc.push(RB.table(['Teacher', 'Action', 'Owner', 'Set', 'Status'], actions.map(({ x, e, carried }) => [
+      x.t.name, e.text, ownerLabel(e.kind), fmtDate(e.date),
+      e.done ? 'closed' : carried ? 'open · carried over' : 'open',
+    ])));
+  } else {
+    doc.push(RB.note('No actions were set in this period and none are carried over.'));
+  }
+
+  /* --- the hard numbers behind the narrative --- */
+  if (f.exams.length) {
+    doc.push(RB.h('Exam results'));
+    doc.push(RB.table(['Date', 'Teacher', 'Group', 'Sat', 'Passed', 'Retaking', 'Pass rate', 'Note'],
+      [...f.exams].sort((a, b) => String(a.date).localeCompare(String(b.date))).map((e) => {
+        const t = teacherById(e.teacherId);
+        return [fmtDate(e.date), t ? t.name : '—', e.group || '—', String(e.sat), String(e.passed),
+          String(e.retake || 0), passRate(e) == null ? '—' : `${passRate(e)}%`, e.note || ''];
+      })));
+  }
+  const booked = obsRows().filter((o) => !o.done && o.date >= p.from && o.date <= p.to);
+  if (f.obs.length || booked.length) {
+    doc.push(RB.h('Class observations'));
+  }
+  if (booked.length) {
+    doc.push(RB.note(`Booked but not yet carried out: ${booked.map((o) => {
+      const t = teacherById(o.teacherId);
+      return `${t ? t.name : 'unassigned'} (${fmtDate(o.date)})`;
+    }).join(', ')}.`));
+  }
+  if (f.obs.length) {
+    doc.push(RB.table(['Date', 'Teacher', 'Group', ...OBS_CRITERIA.map(([, l]) => l), 'Average'],
+      [...f.obs].sort((a, b) => String(a.date).localeCompare(String(b.date))).map((o) => {
+        const t = teacherById(o.teacherId);
+        return [fmtDate(o.date), t ? t.name : '—', o.group || '—',
+          ...OBS_CRITERIA.map(([k]) => { const v = Number((o.scores || {})[k]); return v >= 1 ? String(v) : '—'; }),
+          obsScore(o) == null ? '—' : `${obsScore(o)}/5`];
+      })));
+  }
+  const cssHere = f.rows.filter((x) => x.cssNow);
+  if (cssHere.length) {
+    doc.push(RB.h('CSS rate'));
+    doc.push(RB.table(['Teacher', 'Month', 'Rate', `vs ${standard}% standard`, 'vs previous', 'Note'],
+      cssHere.map((x) => {
+        const now = Number(x.cssNow.rate);
+        return [x.t.name, deptMonthName(x.cssNow.month), `${now}%`,
+          `${now >= standard ? '+' : '−'}${Math.abs(round(now - standard, 1))}`,
+          x.cssPrev ? movedBy(now, Number(x.cssPrev.rate)) : '—',
+          x.cssNow.note || ''];
+      })));
+  }
+
+  /* --- movement, which is the bit management actually reads --- */
+  doc.push(RB.h(`Movement against ${f.prev.label}`));
+  doc.push(RB.table(['Measure', f.prev.label, p.label, 'Change'], [
+    ['1-1s held', String(f.prevSittings), String(f.sittings), movedBy(f.sittings, f.prevSittings)],
+    ['Teachers seen', `${f.prevCoverage}%`, `${f.coverage}%`, movedBy(f.coverage, f.prevCoverage, ' pts')],
+    [`Average CSS${p.kind === 'week' ? ' (monthly figure)' : ''}`,
+      f.cssPrevAvg == null ? '—' : `${f.cssPrevAvg}%${basisPrev}`,
+      f.cssAvg == null ? '—' : `${f.cssAvg}%${basisNow}`,
+      movedBy(f.cssAvg, f.cssPrevAvg, ' pts')],
+    ['Exam pass rate', f.passPrev ? `${f.passPrev.pct}%` : '—', f.pass ? `${f.pass.pct}%` : '—',
+      movedBy(f.pass && f.pass.pct, f.passPrev && f.passPrev.pct, ' pts')],
+    [`Under the standard${p.kind === 'week' ? ' (monthly figure)' : ''}`,
+      `${f.belowPrev} of ${f.cssPrevCount}${basisPrev}`, `${f.below.length} of ${f.cssCount}${basisNow}`,
+      movedBy(f.below.length, f.belowPrev)],
+  ]));
+  return doc;
+}
+
+/* ---- the two renderings ---- */
+
+function docHTML(doc) {
+  return doc.map((n) => {
+    if (n.t === 'stats') return `<div class="stats rp-stats">${n.items.map((s) =>
+      statBox(s.v, s.l, s.d ? `<div class="delta flat">${esc(s.d)}</div>` : '')).join('')}</div>`;
+    if (n.t === 'h') return n.level === 3
+      ? `<div class="rp-block"><h3 class="rp-t">${esc(n.text)}</h3>${n.sub ? `<div class="rp-sub">${esc(n.sub)}</div>` : ''}</div>`
+      : `<h2 class="rp-h">${esc(n.text)}</h2>`;
+    if (n.t === 'p') return `<p class="rp-p">${esc(n.text)}</p>`;
+    if (n.t === 'note') return `<p class="rp-note">${esc(n.text)}</p>`;
+    if (n.t === 'lines') return `<div class="rp-lines">${n.items.map((i) => `
+      <div class="rp-line${i.tag ? ' ' + i.tag : ''}"><div class="rp-lab">${esc(i.label)}</div>
+      <div class="rp-txt">${esc(i.text)}</div></div>`).join('')}</div>`;
+    if (n.t === 'table') return `<div class="rp-tw"><table class="rp-table">
+      <thead><tr>${n.head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+      <tbody>${n.rows.map((row) => `<tr>${row.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table></div>`;
+    return '';
+  }).join('');
+}
+
+/** Markdown, because that is what pastes cleanly into mail, Telegram and Docs. */
+const mdCell = (v) => String(v == null ? '' : v).replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
+function docMD(doc, head) {
+  const out = [`# ${head.title}`, '', ...head.lines.map((l) => `**${l[0]}:** ${l[1]}`), ''];
+  doc.forEach((n) => {
+    if (n.t === 'stats') { n.items.forEach((s) => out.push(`- **${s.l}:** ${s.v}${s.d ? ` — ${s.d}` : ''}`)); out.push(''); }
+    if (n.t === 'h') { out.push(n.level === 3 ? `### ${n.text}` : `## ${n.text}`); if (n.sub) out.push(`*${n.sub}*`); out.push(''); }
+    if (n.t === 'p') { out.push(n.text, ''); }
+    if (n.t === 'note') { out.push(`*${n.text}*`, ''); }
+    if (n.t === 'lines') { n.items.forEach((i) => out.push(`- **${mdCell(i.label)}** — ${mdCell(i.text)}`)); out.push(''); }
+    if (n.t === 'table') {
+      out.push(`| ${n.head.map(mdCell).join(' | ')} |`);
+      out.push(`| ${n.head.map(() => '---').join(' | ')} |`);
+      n.rows.forEach((row) => out.push(`| ${row.map(mdCell).join(' | ')} |`));
+      out.push('');
+    }
+  });
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* the textarea below still works where the API is refused */ }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  ta.remove();
+  return ok;
+}
+
+function commentaryDialog(p) {
+  openDialog({
+    title: `Summary for ${p.label}`,
+    submitLabel: 'Save',
+    wide: true,
+    body: `<label class="f"><span>Your own read on the period</span>
+      <textarea name="text" rows="7" placeholder="What the figures mean, what you are doing about them, what you need from above.">${esc(commentary(p.param))}</textarea></label>
+      <p class="mini">This is the one part of the report the desk does not work out for itself.
+      It opens the report, above the numbers, and travels with every copy, download and print.</p>`,
+    onSubmit: (d) => {
+      const text = d.text.trim();
+      if (text) dept().commentary[p.param] = text;
+      else delete dept().commentary[p.param];
+      saveRender('dept');
+    },
+  });
+}
+
+/* ---- the page ---- */
+
+function renderBrief(view, r) {
+  const p = reportPeriod(r.param);
+  const f = reportFacts(p);
+  const doc = reportDoc(f);
+
+  const who = (DB.settings.name || '').trim();
+  const role = (DB.settings.role || '').trim();
+  const head = {
+    title: `${faceName('work')} — ${p.kind === 'week' ? 'weekly' : 'monthly'} report`,
+    lines: [
+      ['Period', `${p.label} (${fmtDate(p.from)} – ${fmtDate(p.to)})`],
+      ['Prepared by', [who, role].filter(Boolean).join(', ') || 'the department'],
+      ['Generated', fmtDate(todayISO())],
+    ],
+  };
+  const md = docMD(doc, head);
+
+  topbar('Reports', {
+    crumb: `${p.kind === 'week' ? 'Weekly' : 'Monthly'} · ${esc(p.range)}`,
+    actions: `<button class="btn" id="rpcopy">Copy</button>
+      <button class="btn" id="rpmd">Download</button>
+      <button class="btn primary" id="rpprint">Print / PDF</button>`,
+  });
+
+  const thisParam = p.kind === 'week' ? toISO(weekStart(todayISO())) : monthKey(new Date());
+  const nextParam = shiftPeriod(p, 1);
+  const hasNext = reportPeriod(nextParam).from <= todayISO();
+  const toWeek = p.kind === 'week' ? p.param
+    : toISO(weekStart(p.mk === monthKey(new Date()) ? todayISO() : p.from));
+  const toMonth = p.kind === 'month' ? p.param : monthKey(fromISO(p.from));
+
+  view.innerHTML = `
+    <div class="rp-bar">
+      <span class="seg" id="rpkind">
+        <button data-go="${attr(toMonth)}"${p.kind === 'month' ? ' aria-pressed="true"' : ''}>Monthly</button>
+        <button data-go="${attr(toWeek)}"${p.kind === 'week' ? ' aria-pressed="true"' : ''}>Weekly</button>
+      </span>
+      <div class="rp-move">
+        <a class="btn sm" href="${periodHref(shiftPeriod(p, -1))}" title="Previous">◀</a>
+        <strong>${esc(p.label)}</strong>
+        ${hasNext ? `<a class="btn sm" href="${periodHref(nextParam)}" title="Next">▶</a>`
+          : `<span class="btn sm" aria-disabled="true">▶</span>`}
+      </div>
+      ${p.param === thisParam ? '' : `<a class="btn sm" href="${periodHref(thisParam)}">${p.kind === 'week' ? 'This week' : 'This month'}</a>`}
+      <div class="grow"></div>
+      <button class="btn sm" id="rpsay">${commentary(p.param) ? 'Edit summary' : 'Write a summary'}</button>
+      <a class="btn sm" href="${href('work/teachers')}">Log a 1-1</a>
+    </div>
+    <article class="rp" id="rp">
+      ${hero(head.title, `${faceName('work')} · ${p.range}`,
+        head.lines.slice(1).map((l) => ({ html: `${esc(l[0])}: <b>${esc(l[1])}</b>` })))}
+      ${docHTML(doc)}
+    </article>`;
+
+  on('#rpkind button', 'click', (e, b) => go(`work/brief/${b.dataset.go}`), view);
+  $('#rpsay').addEventListener('click', () => commentaryDialog(p));
+  $('#rpcopy').addEventListener('click', async () => {
+    const ok = await copyText(md);
+    toast(ok ? 'Report copied — paste it straight into the message.'
+      : 'Could not reach the clipboard; use Download instead.', ok ? 'ok' : 'bad');
+  });
+  $('#rpmd').addEventListener('click', () =>
+    download(`satashkent-report-${p.file}.md`, md, 'text/markdown'));
+  $('#rpprint').addEventListener('click', () => window.print());
+}
+PAGES['work/brief'] = renderBrief;
 /* ============================================================ 6. CSV reports */
 
 /** Papa with header:false, then objects built by hand so repeated Google-Forms
@@ -5276,7 +5787,10 @@ function renderSettings(view) {
   view.innerHTML = `
     <div class="grid g2">
       ${panel('You', `
-        <label class="f"><span>Name (used in greetings)</span><input id="s_name" value="${attr(s.name)}"></label>
+        <div class="row">
+          <label class="f"><span>Name (used in greetings)</span><input id="s_name" value="${attr(s.name)}"></label>
+          <label class="f"><span>Role (signs the department report)</span><input id="s_role" value="${attr(s.role || '')}" placeholder="Head of Department"></label>
+        </div>
         <div class="row">
           <label class="f"><span>Main currency</span><input id="s_cur" value="${attr(s.currency)}" placeholder="UZS"></label>
           <label class="f"><span>USD rate — UZS per 1 USD</span><input id="s_rate" inputmode="decimal" value="${attr(s.usdRate || 11850)}"></label>
@@ -5326,7 +5840,8 @@ function renderSettings(view) {
 
   $('#savesettings').addEventListener('click', () => {
     Object.assign(s, {
-      name: $('#s_name').value.trim(), currency: $('#s_cur').value.trim().toUpperCase() || 'UZS',
+      name: $('#s_name').value.trim(), role: $('#s_role').value.trim(),
+      currency: $('#s_cur').value.trim().toUpperCase() || 'UZS',
       semStart: $('#s_ss').value, semEnd: $('#s_se').value,
       usdRate: num($('#s_rate').value) || 11850,
       konspektyRoot: cleanPath($('#s_root').value), calcom: $('#s_cal').value.trim(),
