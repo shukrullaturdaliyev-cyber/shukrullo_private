@@ -857,3 +857,95 @@ dialog.palette {
   .covname { font-size: 12.5px; }
   .covcell { font-size: 13px; padding: 7px 0; }
 }
+
+/* ---------- the report that goes to top management ---------- */
+.rp-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding-bottom: 14px; border-bottom: 1px solid var(--line-2);
+}
+.rp-move { display: flex; align-items: center; gap: 8px; }
+.rp-move strong { font-family: var(--serif); font-size: 19px; min-width: 150px; text-align: center; }
+.rp-move [aria-disabled="true"] { opacity: .3; pointer-events: none; }
+
+.rp { display: flex; flex-direction: column; gap: 18px; }
+.rp-stats { margin-bottom: 2px; }
+.rp-h {
+  font-family: var(--ui); font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .14em; color: var(--tx-3);
+  margin: 16px 0 -4px; padding-bottom: 8px; border-bottom: 1px solid var(--line-2);
+}
+.rp-block { margin-top: 10px; }
+.rp-t { font-family: var(--serif); font-size: 24px; font-weight: 500; margin: 0; }
+.rp-sub { font-family: var(--mono); font-size: 11.5px; color: var(--tx-3); margin-top: 3px; }
+.rp-p { color: var(--tx-2); font-size: 14.5px; line-height: 1.6; margin: 0; max-width: 72ch; }
+.rp-note { color: var(--tx-3); font-size: 13.5px; font-style: italic; margin: 0; }
+
+.rp-lines { display: flex; flex-direction: column; gap: 10px; }
+.rp-line { display: grid; grid-template-columns: 148px 1fr; gap: 14px; align-items: baseline; }
+.rp-lab {
+  font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--tx-3); padding-top: 3px;
+}
+.rp-line.open .rp-lab { color: var(--warn); }
+.rp-line.ok .rp-lab { color: var(--ok); }
+.rp-line.warn .rp-lab { color: var(--bad); }
+.rp-txt { color: var(--tx); font-size: 14.5px; line-height: 1.62; white-space: pre-wrap; max-width: 78ch; }
+
+.rp-tw { overflow-x: auto; }
+.rp-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.rp-table th {
+  text-align: left; font-family: var(--ui); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .1em; color: var(--tx-3);
+  padding: 0 14px 7px 0; border-bottom: 1px solid var(--line-2); white-space: nowrap;
+}
+.rp-table td {
+  padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line);
+  color: var(--tx-2); vertical-align: top;
+}
+.rp-table tbody tr:last-child td { border-bottom: 0; }
+.rp-table td:first-child { color: var(--tx); white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .rp-line { grid-template-columns: 1fr; gap: 2px; }
+  .rp-move strong { min-width: 110px; font-size: 17px; }
+}
+
+/* On paper it is a document, not a dashboard: white, serif, no furniture. */
+@media print {
+  .side, .topbar, .mobilebar, .rp-bar, #toasts, dialog { display: none !important; }
+  html, body { background: #fff !important; }
+  .shell, .main { display: block !important; }
+  .page, .page.wide { max-width: none !important; padding: 0 !important; display: block !important; }
+  .rp { color: #000; font-family: var(--serif); gap: 14px; display: block; }
+  .rp * { color: #000 !important; border-color: #bbb !important; background: transparent !important; }
+  .rp .hero { border-top: 2px solid #000 !important; padding: 10px 0 14px; break-after: avoid; }
+  .rp .hero h2 { font-size: 30px; }
+  .rp-h { color: #555 !important; break-after: avoid; margin-top: 18px; }
+  .rp-block, .rp-line, .rp-table tr { break-inside: avoid; }
+  .rp-t { break-after: avoid; }
+  .rp-stats { display: flex; gap: 22px; flex-wrap: wrap; }
+  .rp-stats .stat-v { font-size: 24px; }
+  .rp-table { font-size: 10.5pt; }
+  .rp-tw { overflow: visible; }
+  @page { margin: 16mm 14mm; }
+}
+
+/* ---------- 1-1s: the month strip ---------- */
+.mstrip { display: flex; flex-wrap: wrap; gap: 6px; }
+.mchip {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  padding: 7px 11px; border-radius: var(--r-ctl);
+  border: 1px solid var(--line-2); background: var(--s1);
+  font-family: var(--ui); font-size: 12px; letter-spacing: .02em;
+  color: var(--tx-2); text-decoration: none; white-space: nowrap;
+}
+.mchip:hover { background: var(--s2); color: var(--tx); }
+.mchip .my { font-size: 10px; color: var(--tx-3); }
+.mchip .num { font-size: 11px; color: var(--tx-3); font-family: var(--mono); }
+.mchip.now { border-color: color-mix(in srgb, var(--accent) 50%, var(--line-2)); }
+.mchip.on {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+}
+.mchip.on .my, .mchip.on .num { color: var(--accent-ink); opacity: .72; }
+a.covlab { text-decoration: none; }
+a.covlab:hover { color: var(--tx); background: var(--s2); }

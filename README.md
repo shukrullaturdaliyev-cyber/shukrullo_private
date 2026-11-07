@@ -238,6 +238,61 @@ CSV scorecard can still attribute exam and survey files that name only a group.
 Each teacher's own page gains the same figures for them alone: latest CSS against the standard, pass rate across all
 their sittings, observations, groups, and a CSS trend once there are two months to compare.
 
+### One-to-ones, month by month
+
+The 1-1s page carries a strip of months running from the first journal entry to this one, with the number of
+sittings on each. There are no gaps in it: a month nobody was seen in shows up blank, which is the month worth
+noticing. The month labels along the top of the department's coverage grid link to the same place.
+
+Pressing a month opens it in full — every conversation held that month, teacher by teacher, grouped by the day it
+happened, with each note, piece of feedback and action written out rather than summarised. Actions can be ticked off
+from here; the tick lands on the teacher's journal, because it is the same entry. Alongside it: how many sittings,
+how many of the department was seen, and who was missed.
+
+"Not seen" looks backwards from that month rather than from today — someone's last 1-1 is the last one *before* that
+month, and a conversation held afterwards is shown as "next seen" rather than counted as if it had already happened.
+
+Within a day, entries stay in the order they were written. That order is the shape of the conversation, so nothing
+re-sorts them.
+
+### The report for top management
+
+`Work → Reports` turns the journal into something you can send upward. Pick **Monthly** or **Weekly**, step back and
+forward with the arrows, and the whole report recomputes for that period — the period lives in the URL, so a report
+can be reopened at the same figures later.
+
+The report is built only from what is on the record; where a figure is missing it says so rather than guessing:
+
+- **Headline numbers** — 1-1s held, teachers seen out of the roster, average CSS against the standard, exam pass rate
+  weighted by who actually sat, and actions closed out of actions set.
+- **Coverage** — every teacher on strength in the period, with subject, groups, how many 1-1s, the date of the last
+  one (and how many days ago, if it was before this period), CSS, pass rate and observation score. Someone who
+  left before the period began, or joined after it ended, is left out of it — so adding a teacher today does not
+  retrospectively worsen last month's coverage, provided their joining date is set.
+- **Not seen in this period** — who was missed, and how long it has been.
+- **The one-to-ones** — per teacher, every note and piece of feedback from the period verbatim with its date, the
+  actions set alongside them, and one plain sentence of where that teacher stands, assembled only from figures that
+  exist.
+- **Actions** — everything set in the period plus anything still open from before, with owner and status.
+- **Exam results, class observations and CSS rate** — the sittings, the scored criteria and the monthly figures that
+  sit behind the narrative. Observations booked but not yet carried out are named rather than silently omitted.
+- **Movement** — the same measures against the period before, with the change.
+
+The masthead signs itself from `Everywhere → Settings`: the name there, and a **Role** field beside it that
+defaults to Head of Department.
+
+**Your summary.** One section the desk does not write: *Write a summary* opens a box for your own read on the period.
+It is stored against that period and opens the report above the numbers. Everything else on the page is derived.
+
+Because CSS is recorded by month, a weekly report that quotes it says which month it is quoting, so a September
+figure never reads as last week's.
+
+**Getting it out.** *Copy* puts the whole report on the clipboard as Markdown — paste it straight into mail or a
+message. *Download* saves the same thing as a `.md` file. *Print / PDF* prints it as a document: black on white,
+serif, no sidebar and no buttons, with the table rows and each teacher's block kept off page breaks.
+
+The CSV and Google Sheets page that used to be called Reports is now **Data files**; nothing about it changed.
+
 ### The weekly review
 
 `Everywhere → Review` reads the week rather than asking you to remember it: what closed, what slipped past its date,
