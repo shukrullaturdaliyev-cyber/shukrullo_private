@@ -1946,9 +1946,10 @@ function sessionDates(t, from, to) {
   const seen = (t.entries || []).map((e) => e.date).filter((d) => d && d >= from && d <= to);
   return [...new Set(seen)].sort();
 }
-/** Everyone who was on strength during the period, left teachers included. */
+/** Everyone who was on strength during the period: those who had left before it
+ *  began, and those who joined after it ended, are not the period's to answer for. */
 function reportRoster(p) {
-  return DB.teachers.filter((t) => !t.left || t.left >= p.from)
+  return DB.teachers.filter((t) => (!t.left || t.left >= p.from) && (!t.joined || t.joined <= p.to))
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
 
