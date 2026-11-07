@@ -249,7 +249,9 @@ The report is built only from what is on the record; where a figure is missing i
 - **Headline numbers** — 1-1s held, teachers seen out of the roster, average CSS against the standard, exam pass rate
   weighted by who actually sat, and actions closed out of actions set.
 - **Coverage** — every teacher on strength in the period, with subject, groups, how many 1-1s, the date of the last
-  one (and how many days ago, if it was before this period), CSS, pass rate and observation score.
+  one (and how many days ago, if it was before this period), CSS, pass rate and observation score. Someone who
+  left before the period began, or joined after it ended, is left out of it — so adding a teacher today does not
+  retrospectively worsen last month's coverage, provided their joining date is set.
 - **Not seen in this period** — who was missed, and how long it has been.
 - **The one-to-ones** — per teacher, every note and piece of feedback from the period verbatim with its date, the
   actions set alongside them, and one plain sentence of where that teacher stands, assembled only from figures that
