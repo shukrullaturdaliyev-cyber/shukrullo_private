@@ -238,6 +238,23 @@ CSV scorecard can still attribute exam and survey files that name only a group.
 Each teacher's own page gains the same figures for them alone: latest CSS against the standard, pass rate across all
 their sittings, observations, groups, and a CSS trend once there are two months to compare.
 
+### One-to-ones, month by month
+
+The 1-1s page carries a strip of months running from the first journal entry to this one, with the number of
+sittings on each. There are no gaps in it: a month nobody was seen in shows up blank, which is the month worth
+noticing. The month labels along the top of the department's coverage grid link to the same place.
+
+Pressing a month opens it in full — every conversation held that month, teacher by teacher, grouped by the day it
+happened, with each note, piece of feedback and action written out rather than summarised. Actions can be ticked off
+from here; the tick lands on the teacher's journal, because it is the same entry. Alongside it: how many sittings,
+how many of the department was seen, and who was missed.
+
+"Not seen" looks backwards from that month rather than from today — someone's last 1-1 is the last one *before* that
+month, and a conversation held afterwards is shown as "next seen" rather than counted as if it had already happened.
+
+Within a day, entries stay in the order they were written. That order is the shape of the conversation, so nothing
+re-sorts them.
+
 ### The report for top management
 
 `Work → Reports` turns the journal into something you can send upward. Pick **Monthly** or **Weekly**, step back and

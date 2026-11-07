@@ -1030,6 +1030,28 @@ function staleness(t) {
 function openTasks(t, kind) {
   return (t.entries || []).filter((e) => e.kind === kind && !e.done);
 }
+/** Who a journal entry belongs to — the month view shows entries from several
+ *  teachers at once, so a row cannot assume its teacher the way a journal can. */
+function findEntry(id) {
+  for (const t of DB.teachers) {
+    const e = (t.entries || []).find((x) => x.id === id);
+    if (e) return { t, e };
+  }
+  return null;
+}
+const KIND_PILL = { note: '', feedback: 'accent', task_me: 'warn', task_them: '' };
+/** One journal entry, identical on a teacher's page and in the month view. */
+function entryHTML(e) {
+  const task = e.kind === 'task_me' || e.kind === 'task_them';
+  return `<div class="entry" data-entry="${attr(e.id)}">
+    ${task ? `<label><input type="checkbox" data-done${e.done ? ' checked' : ''}></label>`
+      : `<span class="pill ${KIND_PILL[e.kind] || ''}" style="align-self:flex-start">${esc(kindLabel(e.kind))}</span>`}
+    <div class="body ${e.done ? 'done-text' : ''}">${esc(e.text)}
+      ${e.kind === 'task_me' ? '<span class="pill warn" style="margin-left:6px">for me</span>'
+        : e.kind === 'task_them' ? '<span class="pill" style="margin-left:6px">for them</span>' : ''}</div>
+    <button class="btn danger sm del" data-del>✕</button>
+  </div>`;
+}
 function greeting() {
   const h = new Date().getHours();
   const name = (DB.settings.name || '').trim();
@@ -1222,6 +1244,7 @@ function teamOpenItems() {
 }
 
 function renderTeachers(view, r) {
+  if (/^\d{4}-\d{2}$/.test(r.param)) return renderMonthSessions(view, r.param);
   if (r.param) return renderTeacherPage(view, r);
   topbar('1-1s', { actions: `<button class="btn primary" id="addteacher">+ Teacher</button>` });
 
@@ -1252,8 +1275,15 @@ function renderTeachers(view, r) {
   const active = [...activeT].sort((a, b) => (staleness(b) ?? 1e6) - (staleness(a) ?? 1e6));
   const former = DB.teachers.filter((t) => t.left);
 
+  const thisMonthSittings = monthSittings(monthKey(new Date()));
   view.innerHTML = `
     ${DB.teachers.length ? hero('The team', `${faceName('work')} · one-to-ones`, lines) : ''}
+
+    ${DB.teachers.length ? panel('By month', monthStripHTML(''), {
+      sub: thisMonthSittings ? `${thisMonthSittings} this month — open a month to read every conversation in it`
+        : 'Open a month to read every conversation in it',
+      actions: `<a class="btn sm" href="${href(`work/teachers/${monthKey(new Date())}`)}">This month</a>`,
+    }) : ''}
 
     ${DB.teachers.length ? `<div class="stats">
       ${statBox(activeT.length, 'teachers', former.length ? `<div class="delta flat">${former.length} former</div>` : '')}
@@ -1305,6 +1335,132 @@ function renderTeachers(view, r) {
 }
 PAGES['work/teachers'] = renderTeachers;
 
+/* ---- 1-1s: a month at a time ---- */
+
+/** Every month from the first journal entry to this one, with no gaps: a month
+ *  nobody was seen in is exactly the month worth noticing. */
+function journalMonths() {
+  const months = DB.teachers.flatMap((t) => (t.entries || [])
+    .map((e) => String(e.date || '').slice(0, 7)).filter((m) => /^\d{4}-\d{2}$/.test(m))).sort();
+  const now = monthKey(new Date());
+  const first = months[0] && months[0] < now ? months[0] : now;
+  const out = [];
+  const [y, m] = first.split('-').map(Number);
+  for (let i = 0; i < 120; i++) {
+    const k = monthKey(new Date(y, m - 1 + i, 1));
+    out.push(k);
+    if (k >= now) break;
+  }
+  return out;
+}
+/** How many 1-1s were held in a month — sittings, not entries. */
+const monthSittings = (mk) => sum(DB.teachers.map((t) => new Set((t.entries || [])
+  .filter((e) => String(e.date || '').startsWith(mk)).map((e) => e.date)).size));
+
+/** Who was seen in a month and everything that came out of it, earliest first. */
+function monthSessions(mk) {
+  return DB.teachers.map((t) => {
+    const entries = (t.entries || []).filter((e) => String(e.date || '').startsWith(mk))
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    return { t, entries, dates: [...new Set(entries.map((e) => e.date))].sort() };
+  }).filter((x) => x.entries.length)
+    .sort((a, b) => String(a.dates[0]).localeCompare(String(b.dates[0])) || String(a.t.name).localeCompare(String(b.t.name)));
+}
+
+/** The row of months that runs along the top of both 1-1 views. */
+function monthStripHTML(current) {
+  const months = journalMonths();
+  const now = monthKey(new Date());
+  const years = new Set(months.map((m) => m.slice(0, 4)));
+  return `<div class="mstrip">${months.map((m) => {
+    const n = monthSittings(m);
+    return `<a class="mchip${m === current ? ' on' : ''}${m === now ? ' now' : ''}" href="${href(`work/teachers/${m}`)}">
+      ${esc(monthShort(m))}${years.size > 1 ? ` <span class="my">${esc(m.slice(2, 4))}</span>` : ''}
+      ${n ? `<span class="num">${n}</span>` : ''}</a>`;
+  }).join('')}</div>`;
+}
+
+function renderMonthSessions(view, mk) {
+  const p = reportPeriod(mk);
+  const rows = monthSessions(mk);
+  const roster = reportRoster(p);
+  const seen = new Set(rows.map((x) => x.t.id));
+  const missed = roster.filter((t) => !seen.has(t.id));
+  const sittings = sum(rows.map((x) => x.dates.length));
+  const tasks = rows.flatMap((x) => x.entries.filter((e) => e.kind === 'task_me' || e.kind === 'task_them'));
+  const prev = shiftPeriod(p, -1);
+  const next = shiftPeriod(p, 1);
+  const hasNext = `${next}-01` <= todayISO();
+
+  topbar(deptMonthName(mk), {
+    crumb: `<a href="${href('work/teachers')}">1-1s</a> · by month`,
+    actions: `<a class="btn sm" href="${href(`work/teachers/${prev}`)}">◀</a>
+      ${hasNext ? `<a class="btn sm" href="${href(`work/teachers/${next}`)}">▶</a>`
+        : `<span class="btn sm" aria-disabled="true">▶</span>`}
+      <a class="btn primary" href="${href(`work/brief/${mk}`)}">Report for this month</a>`,
+  });
+
+  const lines = [];
+  if (sittings) lines.push({ kind: '', html: `<b>${sittings}</b> one-to-one${sittings === 1 ? '' : 's'} with <b>${rows.length}</b> teacher${rows.length === 1 ? '' : 's'}` });
+  if (missed.length) lines.push({ kind: 'warn', html: `<b>${missed.length}</b> not seen this month` });
+  if (!sittings) lines.push({ kind: 'bad', html: 'Nobody was seen this month.' });
+
+  view.innerHTML = `
+    ${monthStripHTML(mk)}
+    ${hero(deptMonthName(mk), `${faceName('work')} · one-to-ones`, lines)}
+
+    <div class="stats">
+      ${statBox(sittings, 'one-to-ones held')}
+      ${statBox(`${rows.length}/${roster.length}`, 'teachers seen',
+        roster.length ? `<div class="delta flat">${Math.round((rows.length / roster.length) * 100)}% of the department</div>` : '')}
+      ${statBox(sum(rows.map((x) => x.entries.length)), 'journal entries')}
+      ${statBox(tasks.length, 'actions set',
+        tasks.length ? `<div class="delta ${tasks.every((e) => e.done) ? 'up' : 'flat'}">${tasks.filter((e) => e.done).length} closed</div>` : '')}
+    </div>
+
+    ${rows.map((x) => panel(x.t.name, x.dates.map((d) => `
+      <div class="daygroup">
+        <h4>${esc(fmtDate(d, { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' }))}</h4>
+        ${x.entries.filter((e) => e.date === d).map(entryHTML).join('')}
+      </div>`).join(''), {
+      sub: `${x.t.teaches || 'no subject set'} · ${x.dates.length} session${x.dates.length === 1 ? '' : 's'} · ${x.entries.length} entr${x.entries.length === 1 ? 'y' : 'ies'}`,
+      actions: `<a class="btn sm" href="${href(`work/teachers/${x.t.id}`)}">Open journal</a>`,
+      flush: true,
+    })).join('')}
+
+    ${rows.length ? '' : emptyState(`No 1-1 in ${deptMonthName(mk)}`,
+      'Nothing was logged against any teacher this month. Open a journal and the entry files itself under the date you pick.',
+      `<a class="btn primary" href="${href('work/teachers')}">Go to the team</a>`)}
+
+    ${missed.length ? panel(`Not seen in ${deptMonthName(mk)} · ${missed.length}`, `<div class="list">${missed.map((t) => {
+      // As that month saw it: a 1-1 held afterwards is not an answer to missing one then.
+      const before = (t.entries || []).map((e) => e.date).filter((d) => d && d < p.from).sort().slice(-1)[0];
+      const after = (t.entries || []).map((e) => e.date).filter((d) => d && d > p.to).sort()[0];
+      return `<div class="list-row click" data-teacher="${attr(t.id)}">
+        <div class="grow"><div class="t">${esc(t.name)}</div>
+          <div class="m">${esc(t.teaches || 'no subject set')}${after ? ` · next seen ${esc(fmtDate(after))}` : ''}</div></div>
+        <span class="pill ${before ? 'warn' : 'bad'}">${before ? `last seen ${esc(fmtDate(before))}` : 'no 1-1 before this'}</span></div>`;
+    }).join('')}</div>`, { flush: true }) : ''}`;
+
+  on('[data-teacher]', 'click', (e, el) => go(`work/teachers/${el.dataset.teacher}`), view);
+  view.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-entry]');
+    if (!row || !e.target.closest('[data-del]')) return;
+    const hit = findEntry(row.dataset.entry);
+    if (!hit) return;
+    confirmDialog('Delete entry', hit.e.text.slice(0, 120), () => {
+      hit.t.entries = hit.t.entries.filter((x) => x.id !== hit.e.id);
+      saveRender('teachers');
+    });
+  });
+  view.addEventListener('change', (e) => {
+    const row = e.target.closest('[data-entry]');
+    if (!row || !e.target.matches('[data-done]')) return;
+    const hit = findEntry(row.dataset.entry);
+    if (hit) { hit.e.done = e.target.checked; save('teachers'); render(); }
+  });
+}
+
 /* ---- 1-1s: one teacher's journal ---- */
 function renderTeacherPage(view, r) {
   const t = teacherById(r.param);
@@ -1330,11 +1486,12 @@ function renderTeacherPage(view, r) {
       <button class="btn" id="editteacher">Edit</button>`,
   });
 
-  const entries = [...t.entries].sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
+  // Latest day first, but within a day the order they were written — that order
+  // is the narrative of the conversation, and ids are random, so never sort by them.
+  const entries = [...t.entries].sort((a, b) => String(b.date).localeCompare(String(a.date)));
   const byDate = {};
   entries.forEach((e) => { (byDate[e.date || 'undated'] = byDate[e.date || 'undated'] || []).push(e); });
 
-  const kindPill = { note: '', feedback: 'accent', task_me: 'warn', task_them: '' };
   view.innerHTML = `
     <div class="stats">
       ${statBox(days == null ? '—' : days + 'd', 'since last 1-1', days != null && days > 21 ? `<div class="delta down">over three weeks</div>` : '')}
@@ -1391,13 +1548,7 @@ function renderTeacherPage(view, r) {
     ${panel('Journal', entries.length ? Object.keys(byDate).sort().reverse().map((date) => `
       <div class="daygroup">
         <h4>${date === 'undated' ? 'Undated' : esc(fmtDate(date, { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' }))}</h4>
-        ${byDate[date].map((e) => `<div class="entry" data-entry="${attr(e.id)}">
-          ${e.kind === 'task_me' || e.kind === 'task_them'
-            ? `<label><input type="checkbox" data-done${e.done ? ' checked' : ''}></label>` : `<span class="pill ${kindPill[e.kind] || ''}" style="align-self:flex-start">${esc((KINDS.find((k) => k[0] === e.kind) || ['', 'Note'])[1])}</span>`}
-          <div class="body ${e.done ? 'done-text' : ''}">${esc(e.text)}
-            ${e.kind === 'task_me' ? '<span class="pill warn" style="margin-left:6px">for me</span>' : e.kind === 'task_them' ? '<span class="pill" style="margin-left:6px">for them</span>' : ''}</div>
-          <button class="btn danger sm del" data-del>✕</button>
-        </div>`).join('')}
+        ${byDate[date].map(entryHTML).join('')}
       </div>`).join('') : emptyState('Empty journal', 'Capture the first note, feedback item or task above — it files itself under today.'), { flush: true })}`;
 
   let kind = 'note';
@@ -1803,7 +1954,8 @@ function renderDept(view) {
   /* the grid he asked for: a dot per teacher per month */
   const grid = `<div class="covgrid" style="--cov-months:${months.length}">
     <div class="covrow covhead"><div class="covname"></div>
-      ${months.map((m) => `<div class="covcell covlab${m === thisMonth ? ' now' : ''}">${esc(monthShort(m))}</div>`).join('')}
+      ${months.map((m) => `<a class="covcell covlab${m === thisMonth ? ' now' : ''}" href="${href(`work/teachers/${m}`)}"
+        title="${attr(`Read every 1-1 from ${deptMonthName(m)}`)}">${esc(monthShort(m))}</a>`).join('')}
       <div class="covtot">sessions</div></div>
     ${act.map((t) => {
       const ms = sessionMonths(t);
