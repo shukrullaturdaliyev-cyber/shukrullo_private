@@ -256,7 +256,7 @@ function download(filename, text, mime = 'application/json') {
 
 /* --------------------------------------------------- 2. storage + sync layer */
 
-const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets', 'habits', 'goals', 'health', 'admissions', 'dept'];
+const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets', 'habits', 'goals', 'health', 'dept', 'projects', 'meetings'];
 const LS = 'desk:';
 const PASS_KEY = 'desk:pass';
 
@@ -283,8 +283,9 @@ const DEFAULTS = () => ({
   habits: { items: [], ticks: {} },
   goals: { items: [], reviews: [] },
   health: { days: [] },
-  admissions: { apps: [], essays: [], recommenders: [], tests: [] },
   dept: { standard: 80, css: [], exams: [], observations: [], groups: [], commentary: {} },
+  projects: [],
+  meetings: [],
 });
 
 let DB = DEFAULTS();
@@ -393,10 +394,16 @@ async function loadAll() {
   ['css', 'exams', 'observations', 'groups'].forEach((k) => { if (!Array.isArray(DB.dept[k])) DB.dept[k] = []; });
   if (!Number.isFinite(Number(DB.dept.standard))) DB.dept.standard = 80;
   if (!DB.dept.commentary || typeof DB.dept.commentary !== 'object') DB.dept.commentary = {};
-  DB.admissions = Object.assign({ apps: [], essays: [], recommenders: [], tests: [] }, DB.admissions || {});
-  ['apps', 'essays', 'recommenders', 'tests'].forEach((k) => { if (!Array.isArray(DB.admissions[k])) DB.admissions[k] = []; });
-  DB.admissions.apps.forEach((a) => {
-    ['reqs', 'essayIds', 'recs', 'interviews'].forEach((k) => { if (!Array.isArray(a[k])) a[k] = []; });
+  if (!Array.isArray(DB.projects)) DB.projects = [];
+  DB.projects.forEach((p) => {
+    ['milestones', 'updates', 'teacherIds'].forEach((k) => { if (!Array.isArray(p[k])) p[k] = []; });
+    if (!PROJECT_STATES.some(([v]) => v === p.status)) p.status = 'active';
+    if (!PROJECT_HEALTH.some(([v]) => v === p.health)) p.health = 'on';
+  });
+  if (!Array.isArray(DB.meetings)) DB.meetings = [];
+  DB.meetings.forEach((m) => {
+    ['actions', 'teacherIds'].forEach((k) => { if (!Array.isArray(m[k])) m[k] = []; });
+    if (!MEETING_KINDS.some(([v]) => v === m.kind)) m.kind = 'other';
   });
   if (!Array.isArray(DB.finances.goals)) DB.finances.goals = [];
   ensureFinances();
@@ -585,6 +592,8 @@ const NAV = {
   work: [
     { id: 'overview', label: 'Overview', ico: '◇' },
     { id: 'teachers', label: '1-1s', ico: '☺' },
+    { id: 'meetings', label: 'Meetings', ico: '⌬' },
+    { id: 'projects', label: 'Projects', ico: '⬢' },
     { id: 'dept', label: 'Department', ico: '◫' },
     { id: 'brief', label: 'Reports', ico: '❖' },
     { id: 'tasks', label: 'Tasks', ico: '▤' },
@@ -596,14 +605,6 @@ const NAV = {
     { id: 'courses', label: 'Courses', ico: '❐' },
     { id: 'tasks', label: 'Tasks', ico: '▤' },
     { id: 'konspekty', label: 'Konspekty', ico: '✎' },
-  ],
-  adm: [
-    { id: 'overview', label: 'Overview', ico: '◇' },
-    { id: 'applications', label: 'Applications', ico: '⌸' },
-    { id: 'essays', label: 'Essays', ico: '✑' },
-    { id: 'recommenders', label: 'Recommenders', ico: '☏' },
-    { id: 'tests', label: 'Tests & scores', ico: '⊞' },
-    { id: 'tasks', label: 'Tasks', ico: '▤' },
   ],
   shared: [
     { id: 'today', label: 'Today', ico: '◈' },
@@ -618,11 +619,10 @@ const NAV = {
   ],
 };
 
-/** The three faces the desk wears, in switcher order. */
+/** The two faces the desk wears, in switcher order. */
 const FACES = [
-  { id: 'work', label: 'Work', name: 'SATashkent', title: 'SATashkent' },
+  { id: 'work', label: 'Work', name: 'SATashkent — Math Department', title: 'SATashkent — Math Department' },
   { id: 'uni', label: 'CAU', name: 'CAU', title: 'Central Asian University' },
-  { id: 'adm', label: 'Apply', name: 'Admissions', title: 'Admissions — universities and scholarships' },
 ];
 const FACE_IDS = FACES.map((f) => f.id);
 const isFace = (v) => FACE_IDS.includes(v);
@@ -697,9 +697,8 @@ function renderNav() {
     reports: DB.datasets.length,
     teachers: DB.teachers.filter((t) => !t.left).length,
     notes: DB.notes.length,
-    applications: openApps().length,
-    essays: (DB.admissions.essays || []).filter((e) => e.status !== 'final').length,
-    recommenders: (DB.admissions.recommenders || []).length,
+    projects: liveProjects().length,
+    meetings: DB.meetings.length,
   };
   const group = (title, list, faceKey, titleHTML) => `<div class="navgroup">${titleHTML || esc(title)}</div>` + list.map((p) => {
     const active = r.face === faceKey && r.page === p.id;
@@ -708,7 +707,7 @@ function renderNav() {
       <span class="ico">${p.ico}</span>${esc(p.label)}${badge}</a>`;
   }).join('');
 
-  const groupTitle = { work: 'SATashkent', uni: 'Central Asian University', adm: 'Admissions' }[face] || '';
+  const groupTitle = { work: 'SATashkent — Math Department', uni: 'Central Asian University' }[face] || '';
   $('#nav').innerHTML =
     group(groupTitle, NAV[face], face,
       face === 'uni' ? `<img src="/assets/cau.png" alt="Central Asian University" class="nav-logo">` : '') +
@@ -745,7 +744,7 @@ const PAGES = {}; // filled in by the module sections below
 
 /* Dense pages opt out of the reading measure the editorial layout imposes. */
 const WIDE_PAGES = new Set(['shared/calendar', 'shared/notes', 'uni/timetable', 'uni/konspekty',
-  'work/reports', 'work/brief', 'work/tasks', 'uni/tasks', 'adm/tasks']);
+  'work/reports', 'work/brief', 'work/tasks', 'work/projects', 'work/meetings', 'uni/tasks']);
 
 function render() {
   const r = route();
@@ -882,8 +881,8 @@ function taskDialog(existing, face, presetCourse, presetApp) {
       ${goalsOpen().map((g) => `<option value="${attr(g.id)}"${t.goal === g.id ? ' selected' : ''}>${esc(g.title)}</option>`).join('')}</select></label>` : ''}
     ${face === 'uni' ? `<label class="f"><span>Course</span><select name="course"><option value="">— none —</option>
       ${courses.map((c) => `<option value="${attr(c.id)}"${t.course === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}
-    ${face === 'adm' && allApps().length ? `<label class="f"><span>Application</span><select name="app"><option value="">— none —</option>
-      ${allApps().map((a) => `<option value="${attr(a.id)}"${t.app === a.id ? ' selected' : ''}>${esc(appTitle(a))}</option>`).join('')}</select></label>` : ''}
+    ${face === 'work' && liveProjects().length ? `<label class="f"><span>Project</span><select name="project"><option value="">— none —</option>
+      ${liveProjects().map((pr) => `<option value="${attr(pr.id)}"${t.project === pr.id ? ' selected' : ''}>${esc(pr.name)}</option>`).join('')}</select></label>` : ''}
     <div class="row">
       <label class="f"><span>Repeats</span><select name="rev">
         ${REPEATS.map(([v, l]) => `<option value="${v}"${(t.repeat && t.repeat.every || '') === v ? ' selected' : ''}>${l}</option>`).join('')}
@@ -933,7 +932,7 @@ function taskDialog(existing, face, presetCourse, presetApp) {
       Object.assign(t, {
         title, due: data.due || '', link: data.link.trim(), notes: data.notes,
         course: data.course || '', status: data.status, progress: Number(data.progress) || 0,
-        app: data.app == null ? (t.app || '') : data.app,
+        project: data.project == null ? (t.project || '') : data.project,
         goal: data.goal == null ? (t.goal || '') : data.goal,
         steps: steps.filter((s) => s.text.trim()).map((s) => ({ ...s, text: s.text.trim() })),
         repeat: data.rev ? {
@@ -1071,6 +1070,11 @@ function renderWorkOverview(view) {
     .sort((a, b) => (b.days == null ? 1e6 : b.days) - (a.days == null ? 1e6 : a.days));
   const cold = stale.filter((x) => x.days == null || x.days > 21);
   const recentNotes = [...DB.notes].sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || ''))).slice(0, 5);
+  const live = liveProjects();
+  const offTrack = live.filter((x) => x.health !== 'on');
+  const lateMs = overdueMilestones();
+  const mtSoon = upcomingMeetings(7).filter((m) => m.date >= todayISO());
+  const mtOpen = openMeetingActions();
 
   // exam medians across every uploaded week — the department's pulse
   const pool = allExamRecords();
@@ -1085,6 +1089,9 @@ function renderWorkOverview(view) {
   if (dueToday.length) lines.push({ kind: 'warn', html: `<b>${dueToday.length}</b> due today` });
   if (owed.length) lines.push({ kind: '', html: `<b>${owed.length}</b> you owe teachers` });
   if (cold.length) lines.push({ kind: 'warn', html: `<b>${cold.length}</b> unseen for 3+ weeks` });
+  if (offTrack.length) lines.push({ kind: 'bad', html: `<b>${offTrack.length}</b> project${offTrack.length === 1 ? '' : 's'} not on track` });
+  if (lateMs.length) lines.push({ kind: 'warn', html: `<b>${lateMs.length}</b> milestone${lateMs.length === 1 ? '' : 's'} past its date` });
+  if (mtSoon.length) lines.push({ kind: '', html: `<b>${mtSoon.length}</b> meeting${mtSoon.length === 1 ? '' : 's'} this week` });
   if (!lines.length) lines.push({ kind: 'good', html: DB.teachers.length ? 'Nothing overdue — a clear desk.' : 'Empty desk. Add a teacher to begin.' });
 
   topbar(' ');
@@ -1099,6 +1106,8 @@ function renderWorkOverview(view) {
       ${statBox(overdue.length, 'overdue', overdue.length ? `<div class="delta down">needs today</div>` : `<div class="delta up">all clear</div>`)}
       ${statBox(week.length + dueToday.length, 'due this week')}
       ${statBox(owed.length, 'tasks I owe', waiting.length ? `<div class="delta flat">${waiting.length} waiting on them</div>` : '')}
+      ${statBox(live.length, 'live projects', offTrack.length ? `<div class="delta down">${offTrack.length} not on track</div>`
+        : live.length ? `<div class="delta up">all on track</div>` : '')}
       ${scale
         ? statBox(lastMed + scale.unit, 'latest exam median',
             `<div class="spark-wrap">${sparkline(medians)}${(() => {
@@ -1109,6 +1118,27 @@ function renderWorkOverview(view) {
           })()}</div>`)
         : statBox(DB.datasets.length, 'datasets loaded', `<div class="delta flat">upload a week</div>`)}
     </div>
+
+    ${live.length || mtSoon.length || mtOpen.length ? `<div class="grid g-side">
+      ${panel('Projects', live.length ? `<div class="pjgrid">${live.slice(0, 4).map(projectCard).join('')}</div>`
+        : emptyState('No live projects', 'Work that runs longer than a conversation belongs on the board.',
+          `<button class="btn sm" data-goto="work/projects">Open projects</button>`),
+        { actions: `<button class="btn sm ghost" data-goto="work/projects">All projects</button>`,
+          sub: lateMs.length ? `${lateMs.length} milestone${lateMs.length === 1 ? '' : 's'} past its date` : '' })}
+
+      ${panel('Meetings', mtSoon.length || mtOpen.length ? `<div class="list">
+        ${mtSoon.slice(0, 4).map((m) => `<div class="list-row click" data-goto="work/meetings/${attr(m.id)}">
+          <div class="grow"><div class="t trunc">${esc(m.title || meetingKindLabel(m.kind))}</div>
+            <div class="m">${esc(meetingKindLabel(m.kind))}${m.time ? ' · ' + esc(m.time) : ''}</div></div>
+          <span class="pill ${dueClass(m.date)}">${esc(fmtDay(m.date))}</span></div>`).join('')}
+        ${mtOpen.slice(0, 4).map(({ m, a }) => `<div class="list-row click" data-goto="work/meetings/${attr(m.id)}">
+          <div class="grow"><div class="t trunc">${esc(a.text)}</div>
+            <div class="m">${a.owner ? esc(a.owner) + ' · ' : ''}${esc(fmtDate(m.date))}</div></div>
+          <span class="pill ${a.due ? dueClass(a.due) : 'warn'}">${a.due ? esc(relDays(a.due)) : 'open'}</span></div>`).join('')}
+      </div>` : emptyState('Nothing in the diary', 'Log a department or management meeting and its decisions stay with it.'),
+        { flush: true, actions: `<button class="btn sm ghost" data-goto="work/meetings">All meetings</button>`,
+          sub: mtOpen.length ? `${mtOpen.length} open action${mtOpen.length === 1 ? '' : 's'}` : '' })}
+    </div>` : ''}
 
     <div class="grid g-side">
       ${panel('Today', (overdue.length || dueToday.length) ? `<div class="list">${
@@ -1175,6 +1205,8 @@ function renderWorkOverview(view) {
   on('[data-open-task]', 'click', (e, el) => { const t = taskById(el.dataset.openTask); if (t) taskDialog(t, 'work'); }, view);
   on('[data-note]', 'click', (e, el) => go(`shared/notes/${el.dataset.note}`), view);
   on('[data-report]', 'click', (e, el) => go(`work/reports/${el.dataset.report}`), view);
+  on('[data-project]', 'click', (e, el) => go(`work/projects/${el.dataset.project}`), view);
+  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
 }
 PAGES['work/overview'] = renderWorkOverview;
 
@@ -2166,11 +2198,29 @@ function reportFacts(p) {
   const allObs = rows.flatMap((x) => x.obs);
   const setNow = rows.flatMap((x) => x.set);
 
+  const meets = meetingsIn(p.from, p.to);
+  const meetPrev = meetingsIn(prev.from, prev.to);
+  const meetActions = meets.flatMap((m) => (m.actions || []).map((a) => ({ m, a })));
+  const pjRows = DB.projects.filter((x) => x.status !== 'dropped').map((x) => ({
+    project: x,
+    hit: (x.milestones || []).filter((ms) => ms.done && ms.doneOn && ms.doneOn >= p.from && ms.doneOn <= p.to),
+    updates: (x.updates || []).filter((u) => u.date >= p.from && u.date <= p.to)
+      .sort((a, b) => String(a.date).localeCompare(String(b.date))),
+    late: (x.milestones || []).filter((ms) => !ms.done && ms.due && ms.due < todayISO()),
+  }));
+
   return {
     p,
     prev,
     rows,
     seen,
+    meets,
+    meetPrev,
+    meetActions,
+    meetOpen: meetActions.filter((x) => !x.a.done),
+    pjRows,
+    pjLive: pjRows.filter((x) => x.project.status === 'active' || x.project.status === 'paused'),
+    pjMoved: pjRows.filter((x) => x.hit.length || x.updates.length),
     sittings,
     prevSittings,
     coverage: rows.length ? Math.round((seen.length / rows.length) * 100) : 0,
@@ -2289,6 +2339,9 @@ function reportDoc(f) {
         : `standard ${standard}%${basisNow || ` · ${movedBy(f.cssAvg, f.cssPrevAvg)} vs prev`}` },
     { v: f.pass ? `${f.pass.pct}%` : '—', l: 'exam pass rate', d: f.pass ? `${f.pass.passed} of ${f.pass.sat} sat` : 'no sittings' },
     { v: `${f.closed.length}/${f.set.length}`, l: 'actions closed', d: f.carried.length ? `${f.carried.length} open from before` : 'nothing carried over' },
+    { v: String(f.meets.length), l: 'meetings held', d: `${movedBy(f.meets.length, f.meetPrev.length)} vs prev` },
+    { v: `${f.pjLive.length}`, l: 'live projects', d: f.pjLive.filter((x) => x.project.health !== 'on').length
+      ? `${f.pjLive.filter((x) => x.project.health !== 'on').length} not on track` : 'all on track' },
   ]));
 
   const say = commentary(p.param);
@@ -2405,10 +2458,79 @@ function reportDoc(f) {
       })));
   }
 
+  /* --- the rooms --- */
+  doc.push(RB.h('Meetings'));
+  if (f.meets.length) {
+    doc.push(RB.table(['Date', 'Meeting', 'Kind', 'Present', 'Project', 'Actions'], f.meets.map((m) => {
+      const c = meetingActionCount(m);
+      const named = meetingTeachers(m).map((t) => t.name);
+      const extra = (m.attendees || '').split(',').map((x) => x.trim()).filter(Boolean);
+      return [fmtDate(m.date), m.title || meetingKindLabel(m.kind), meetingKindLabel(m.kind),
+        [...named, ...extra].join(', ') || '—', m.project ? projectName(m.project) : '—',
+        c.total ? `${c.done}/${c.total}` : '—'];
+    })));
+    f.meets.filter((m) => m.decisions || m.notes).forEach((m) => {
+      doc.push(RB.h(`${m.title || meetingKindLabel(m.kind)} — ${fmtDate(m.date)}`, {
+        level: 3,
+        sub: `${meetingKindLabel(m.kind)}${m.project ? ' · ' + projectName(m.project) : ''}`,
+      }));
+      const lines = [];
+      if (m.agenda) lines.push({ label: 'Agenda', text: m.agenda });
+      if (m.notes) lines.push({ label: 'Notes', text: m.notes });
+      if (m.decisions) lines.push({ label: 'Decisions', text: m.decisions });
+      doc.push(RB.lines(lines));
+      if ((m.actions || []).length) {
+        doc.push(RB.lines(m.actions.map((a) => ({
+          label: a.done ? 'Action · closed' : 'Action · open',
+          text: `${a.text}${a.owner ? ` — ${a.owner}` : ''}${a.due ? `, due ${fmtDate(a.due)}` : ''}`,
+          tag: a.done ? 'ok' : 'open',
+        }))));
+      }
+    });
+    if (f.meetOpen.length) {
+      doc.push(RB.h('Still open out of the meetings', { level: 3 }));
+      doc.push(RB.table(['Action', 'Owner', 'From', 'Due'], f.meetOpen.map(({ m, a }) => [
+        a.text, a.owner || '—', `${m.title || meetingKindLabel(m.kind)} · ${fmtDate(m.date)}`, a.due ? fmtDate(a.due) : '—'])));
+    }
+  } else {
+    doc.push(RB.note(`No meeting was logged between ${fmtDate(p.from)} and ${fmtDate(p.to)}.`));
+  }
+
+  /* --- the longer work --- */
+  doc.push(RB.h('Projects'));
+  if (f.pjRows.length) {
+    doc.push(RB.table(['Project', 'Status', 'Health', 'Lead', 'Progress', 'Due', 'This period'],
+      f.pjRows.map(({ project: x, hit, updates, late }) => {
+        const pr = projectProgress(x);
+        const running = x.status === 'active' || x.status === 'paused';
+        return [x.name, projectStatusLabel(x.status), running ? projectHealthLabel(x.health) : '—', x.lead || '—',
+          pr.counted ? `${pr.done}/${pr.total}` : '—',
+          x.due ? fmtDate(x.due) : '—',
+          [hit.length ? `${hit.length} milestone${hit.length === 1 ? '' : 's'} hit` : '',
+            updates.length ? `${updates.length} update${updates.length === 1 ? '' : 's'}` : '',
+            late.length ? `${late.length} past its date` : ''].filter(Boolean).join(', ') || 'no movement'];
+      })));
+    f.pjMoved.forEach(({ project: x, hit, updates }) => {
+      doc.push(RB.h(x.name, {
+        level: 3,
+        sub: `${projectStatusLabel(x.status)}${x.status === 'active' || x.status === 'paused' ? ' · ' + projectHealthLabel(x.health) : ''}${x.lead ? ' · ' + x.lead : ''}`,
+      }));
+      if (hit.length) {
+        doc.push(RB.lines(hit.map((ms) => ({ label: `Milestone · ${fmtDate(ms.doneOn)}`, text: ms.title, tag: 'ok' }))));
+      }
+      if (updates.length) {
+        doc.push(RB.lines(updates.map((u) => ({ label: dayShort(u.date), text: u.text }))));
+      }
+    });
+  } else {
+    doc.push(RB.note('No projects on the board.'));
+  }
+
   /* --- movement, which is the bit management actually reads --- */
   doc.push(RB.h(`Movement against ${f.prev.label}`));
   doc.push(RB.table(['Measure', f.prev.label, p.label, 'Change'], [
     ['1-1s held', String(f.prevSittings), String(f.sittings), movedBy(f.sittings, f.prevSittings)],
+    ['Meetings held', String(f.meetPrev.length), String(f.meets.length), movedBy(f.meets.length, f.meetPrev.length)],
     ['Teachers seen', `${f.prevCoverage}%`, `${f.coverage}%`, movedBy(f.coverage, f.prevCoverage, ' pts')],
     [`Average CSS${p.kind === 'week' ? ' (monthly figure)' : ''}`,
       f.cssPrevAvg == null ? '—' : `${f.cssPrevAvg}%${basisPrev}`,
@@ -2567,6 +2689,611 @@ function renderBrief(view, r) {
   $('#rpprint').addEventListener('click', () => window.print());
 }
 PAGES['work/brief'] = renderBrief;
+
+/* ===================================== 5d. projects and meetings ==========
+ * Running the department is not only conversations. These are the two other
+ * things a head of department is actually accountable for: work that spans
+ * weeks, and rooms full of people. Both feed the monthly report.
+ * ========================================================================= */
+
+const PROJECT_STATES = [
+  ['idea', 'Idea'],
+  ['active', 'Active'],
+  ['paused', 'Paused'],
+  ['done', 'Done'],
+  ['dropped', 'Dropped'],
+];
+const PROJECT_HEALTH = [
+  ['on', 'On track'],
+  ['risk', 'At risk'],
+  ['blocked', 'Blocked'],
+];
+const MEETING_KINDS = [
+  ['dept', 'Department meeting'],
+  ['mgmt', 'With management'],
+  ['project', 'Project meeting'],
+  ['teachers', 'With teachers'],
+  ['parents', 'With parents'],
+  ['students', 'With students'],
+  ['other', 'Other'],
+];
+const HEALTH_PILL = { on: 'ok', risk: 'warn', blocked: 'bad' };
+const STATE_PILL = { idea: '', active: 'accent', paused: 'warn', done: 'ok', dropped: '' };
+
+const labelOf = (list, v, fallback) => (list.find((x) => x[0] === v) || ['', fallback])[1];
+const projectStatusLabel = (v) => labelOf(PROJECT_STATES, v, 'Active');
+const projectHealthLabel = (v) => labelOf(PROJECT_HEALTH, v, 'On track');
+const meetingKindLabel = (v) => labelOf(MEETING_KINDS, v, 'Meeting');
+
+const projectById = (id) => DB.projects.find((p) => p.id === id);
+const projectName = (id) => { const p = projectById(id); return p ? p.name : ''; };
+/** Live means it is being worked on now — what the rest of the desk counts. */
+const liveProjects = () => DB.projects.filter((p) => p.status === 'active' || p.status === 'paused');
+const projectsByStatus = (st) => DB.projects.filter((p) => p.status === st);
+
+/** Progress is the milestones, not a number anyone has to keep honest by hand. */
+function projectProgress(p) {
+  const ms = p.milestones || [];
+  if (!ms.length) return { done: 0, total: 0, pct: p.status === 'done' ? 100 : 0, counted: false };
+  const done = ms.filter((m) => m.done).length;
+  return { done, total: ms.length, pct: Math.round((done / ms.length) * 100), counted: true };
+}
+const nextMilestone = (p) => (p.milestones || []).filter((m) => !m.done && m.due)
+  .sort((a, b) => String(a.due).localeCompare(String(b.due)))[0] || null;
+const lastUpdate = (p) => [...(p.updates || [])].sort((a, b) => String(a.date).localeCompare(String(b.date))).slice(-1)[0] || null;
+/** Days since anyone wrote anything on a live project — silence is the signal. */
+function projectSilence(p) {
+  const u = lastUpdate(p);
+  if (!u || !u.date) return null;
+  return daysBetween(fromISO(u.date), new Date());
+}
+
+/** Every dated thing a project owns, for the calendar and for Today. */
+function projectDates() {
+  const out = [];
+  liveProjects().forEach((p) => {
+    if (p.due) out.push({ projectId: p.id, date: p.due, kind: 'deadline', label: `${p.name} — due` });
+    (p.milestones || []).filter((m) => !m.done && m.due)
+      .forEach((m) => out.push({ projectId: p.id, date: m.due, kind: 'milestone', label: m.title }));
+  });
+  return out.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+}
+const overdueMilestones = () => projectDates().filter((d) => daysUntil(d.date) < 0);
+
+const meetingById = (id) => DB.meetings.find((m) => m.id === id);
+const meetingsSorted = () => [...DB.meetings].sort((a, b) =>
+  String(b.date).localeCompare(String(a.date)) || String(b.time || '').localeCompare(String(a.time || '')));
+const meetingsIn = (from, to) => DB.meetings.filter((m) => m.date && m.date >= from && m.date <= to)
+  .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.time || '').localeCompare(String(b.time || '')));
+/** Meetings from today out to n days — the ones still ahead of you. */
+const upcomingMeetings = (n) => meetingsIn(todayISO(), toISO(addDays(new Date(), n)));
+const meetingsForProject = (id) => DB.meetings.filter((m) => m.project === id)
+  .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+function openMeetingActions() {
+  return DB.meetings.flatMap((m) => (m.actions || []).filter((a) => !a.done).map((a) => ({ m, a })))
+    .sort((x, y) => String(x.a.due || '9999').localeCompare(String(y.a.due || '9999')));
+}
+const meetingActionCount = (m) => {
+  const list = m.actions || [];
+  return { done: list.filter((a) => a.done).length, total: list.length };
+};
+/** Teachers named on a meeting, resolved; ids for people who have left stay out. */
+const meetingTeachers = (m) => (m.teacherIds || []).map(teacherById).filter(Boolean);
+
+/* ---- the dialogs ---- */
+
+const teacherChecks = (name, chosen) => `<div class="tchecks">${activeTeachers().map((t) => `
+  <label class="tcheck"><input type="checkbox" name="${name}_${attr(t.id)}"${(chosen || []).includes(t.id) ? ' checked' : ''}>
+  ${esc(t.name)}</label>`).join('') || '<span class="mini mut">No teachers on the register yet.</span>'}</div>`;
+const pickedTeachers = (d, name) => activeTeachers().filter((t) => d[`${name}_${t.id}`]).map((t) => t.id);
+
+function projectDialog(existing) {
+  const p = existing || {
+    id: uid(), name: '', summary: '', status: 'active', health: 'on', lead: '',
+    start: todayISO(), due: '', link: '', teacherIds: [], milestones: [], updates: [],
+  };
+  openDialog({
+    title: existing ? 'Edit project' : 'New project',
+    wide: true,
+    body: `
+      <label class="f"><span>Project</span><input name="name" value="${attr(p.name)}" placeholder="e.g. Rebuild the SAT placement test"></label>
+      <label class="f"><span>What it is for</span><textarea name="summary" rows="2" placeholder="One or two sentences — the outcome, not the activity.">${esc(p.summary || '')}</textarea></label>
+      <div class="row">
+        <label class="f"><span>Status</span><select name="status">${PROJECT_STATES.map(([v, l]) => `<option value="${v}"${p.status === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span>Health</span><select name="health">${PROJECT_HEALTH.map(([v, l]) => `<option value="${v}"${p.health === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span>Lead</span><input name="lead" value="${attr(p.lead || '')}" placeholder="who owns it"></label>
+      </div>
+      <div class="row">
+        <label class="f"><span>Started</span><input name="start" type="date" value="${attr(p.start || '')}"></label>
+        <label class="f"><span>Due</span><input name="due" type="date" value="${attr(p.due || '')}"></label>
+      </div>
+      <label class="f"><span>Link (optional)</span><input name="link" value="${attr(p.link || '')}" placeholder="shared doc, sheet, folder"></label>
+      <p class="mini b" style="margin:12px 0 6px">TEACHERS INVOLVED</p>
+      ${teacherChecks('t', p.teacherIds)}
+      <p class="mini">Milestones and updates are added on the project's own page — that is where the work actually gets tracked.</p>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delproject">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delproject', dlg);
+      if (del) del.addEventListener('click', () => {
+        close();
+        confirmDialog('Delete project', `“${p.name}” and its milestones and updates will be removed. Meetings filed against it keep their notes but lose the link.`, () => {
+          DB.projects = DB.projects.filter((x) => x.id !== p.id);
+          DB.meetings.forEach((m) => { if (m.project === p.id) m.project = ''; });
+          DB.tasks.forEach((t) => { if (t.project === p.id) t.project = ''; });
+          save('meetings'); save('tasks');
+          go('work/projects');
+          saveRender('projects');
+        }, 'Delete');
+      });
+    },
+    onSubmit: (d) => {
+      const name = d.name.trim();
+      if (!name) { toast('A project needs a name.', 'bad'); return false; }
+      if (d.start && d.due && d.due < d.start) { toast('The due date is before the start date.', 'bad'); return false; }
+      Object.assign(p, {
+        name, summary: d.summary.trim(), status: d.status, health: d.health,
+        lead: d.lead.trim(), start: d.start, due: d.due, link: d.link.trim(),
+        teacherIds: pickedTeachers(d, 't'),
+      });
+      if (!existing) DB.projects.push(p);
+      saveRender('projects');
+    },
+  });
+}
+
+function milestoneDialog(p, existing) {
+  const m = existing || { id: uid(), title: '', due: '', done: false, doneOn: '' };
+  openDialog({
+    title: existing ? 'Edit milestone' : 'Add a milestone',
+    body: `
+      <label class="f"><span>Milestone</span><input name="title" value="${attr(m.title)}" placeholder="what has to be true"></label>
+      <div class="row">
+        <label class="f"><span>Due</span><input name="due" type="date" value="${attr(m.due || '')}"></label>
+        <label class="f"><span><input type="checkbox" name="done"${m.done ? ' checked' : ''}> Done</span></label>
+      </div>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delms">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delms', dlg);
+      if (del) del.addEventListener('click', () => {
+        p.milestones = (p.milestones || []).filter((x) => x.id !== m.id);
+        close(); saveRender('projects');
+      });
+    },
+    onSubmit: (d) => {
+      const title = d.title.trim();
+      if (!title) { toast('A milestone needs a name.', 'bad'); return false; }
+      const wasDone = m.done;
+      Object.assign(m, { title, due: d.due, done: !!d.done });
+      m.doneOn = m.done ? (wasDone && m.doneOn ? m.doneOn : todayISO()) : '';
+      if (!existing) (p.milestones = p.milestones || []).push(m);
+      saveRender('projects');
+    },
+  });
+}
+
+function updateDialog(p, existing) {
+  const u = existing || { id: uid(), date: todayISO(), text: '' };
+  openDialog({
+    title: existing ? 'Edit update' : 'Log an update',
+    wide: true,
+    body: `
+      <label class="f"><span>Date</span><input name="date" type="date" value="${attr(u.date)}" style="max-width:200px"></label>
+      <label class="f"><span>What moved</span><textarea name="text" rows="4" placeholder="What happened, what is now blocked, what you decided.">${esc(u.text)}</textarea></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delupd">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delupd', dlg);
+      if (del) del.addEventListener('click', () => {
+        p.updates = (p.updates || []).filter((x) => x.id !== u.id);
+        close(); saveRender('projects');
+      });
+    },
+    onSubmit: (d) => {
+      const text = d.text.trim();
+      if (!text) { toast('Write what moved.', 'bad'); return false; }
+      Object.assign(u, { date: d.date || todayISO(), text });
+      if (!existing) (p.updates = p.updates || []).push(u);
+      saveRender('projects');
+    },
+  });
+}
+
+function meetingDialog(existing, preset) {
+  const m = existing || {
+    id: uid(), date: todayISO(), time: '', kind: (preset && preset.kind) || 'dept', title: '',
+    attendees: '', teacherIds: [], project: (preset && preset.project) || '',
+    agenda: '', notes: '', decisions: '', actions: [],
+  };
+  openDialog({
+    title: existing ? 'Edit meeting' : 'Log a meeting',
+    wide: true,
+    body: `
+      <label class="f"><span>Title</span><input name="title" value="${attr(m.title)}" placeholder="e.g. Monthly department meeting"></label>
+      <div class="row">
+        <label class="f"><span>Kind</span><select name="kind">${MEETING_KINDS.map(([v, l]) => `<option value="${v}"${m.kind === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span>Date</span><input name="date" type="date" value="${attr(m.date)}"></label>
+        <label class="f"><span>Time (optional)</span><input name="time" type="time" value="${attr(m.time || '')}"></label>
+      </div>
+      ${DB.projects.length ? `<label class="f"><span>About a project</span><select name="project"><option value="">— none —</option>
+        ${DB.projects.map((p) => `<option value="${attr(p.id)}"${m.project === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>` : ''}
+      <label class="f"><span>Others present (free text)</span><input name="attendees" value="${attr(m.attendees || '')}" placeholder="names from outside the register"></label>
+      <p class="mini b" style="margin:12px 0 6px">TEACHERS PRESENT</p>
+      ${teacherChecks('t', m.teacherIds)}
+      <label class="f"><span>Agenda</span><textarea name="agenda" rows="2" placeholder="What it was called for.">${esc(m.agenda || '')}</textarea></label>
+      <label class="f"><span>Notes</span><textarea name="notes" rows="5" placeholder="What was actually said.">${esc(m.notes || '')}</textarea></label>
+      <label class="f"><span>Decisions</span><textarea name="decisions" rows="3" placeholder="What was settled — this is the part management reads.">${esc(m.decisions || '')}</textarea></label>
+      <p class="mini">Actions are added on the meeting's own page, so each one can carry an owner and a date.</p>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delmeeting">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delmeeting', dlg);
+      if (del) del.addEventListener('click', () => {
+        close();
+        confirmDialog('Delete meeting', `“${m.title || meetingKindLabel(m.kind)}” of ${fmtDate(m.date)} and its actions will be removed.`, () => {
+          DB.meetings = DB.meetings.filter((x) => x.id !== m.id);
+          go('work/meetings');
+          saveRender('meetings');
+        }, 'Delete');
+      });
+    },
+    onSubmit: (d) => {
+      if (!d.date) { toast('A meeting needs a date.', 'bad'); return false; }
+      if (!d.title.trim() && !d.notes.trim()) { toast('Give it a title or some notes.', 'bad'); return false; }
+      Object.assign(m, {
+        date: d.date, time: d.time || '', kind: d.kind, title: d.title.trim(),
+        attendees: d.attendees.trim(), teacherIds: pickedTeachers(d, 't'),
+        project: d.project || '', agenda: d.agenda.trim(), notes: d.notes.trim(),
+        decisions: d.decisions.trim(),
+      });
+      if (!existing) DB.meetings.push(m);
+      saveRender('meetings');
+    },
+  });
+}
+
+function meetingActionDialog(m, existing) {
+  const a = existing || { id: uid(), text: '', owner: '', due: '', done: false };
+  openDialog({
+    title: existing ? 'Edit action' : 'Add an action',
+    body: `
+      <label class="f"><span>Action</span><input name="text" value="${attr(a.text)}" placeholder="what has to happen"></label>
+      <div class="row">
+        <label class="f"><span>Owner</span><input name="owner" value="${attr(a.owner || '')}" list="ownerlist" placeholder="who does it"></label>
+        <label class="f"><span>Due</span><input name="due" type="date" value="${attr(a.due || '')}"></label>
+      </div>
+      <datalist id="ownerlist">${activeTeachers().map((t) => `<option value="${attr(t.name)}">`).join('')}
+        <option value="${attr((DB.settings.name || 'me').trim() || 'me')}"></datalist>
+      <label class="f"><span><input type="checkbox" name="done"${a.done ? ' checked' : ''}> Already done</span></label>`,
+    extraFooter: existing ? `<button type="button" class="btn danger left" id="delact">Delete</button>` : '',
+    onOpen: (dlg, close) => {
+      const del = $('#delact', dlg);
+      if (del) del.addEventListener('click', () => {
+        m.actions = (m.actions || []).filter((x) => x.id !== a.id);
+        close(); saveRender('meetings');
+      });
+    },
+    onSubmit: (d) => {
+      const text = d.text.trim();
+      if (!text) { toast('An action needs words.', 'bad'); return false; }
+      Object.assign(a, { text, owner: d.owner.trim(), due: d.due, done: !!d.done });
+      if (!existing) (m.actions = m.actions || []).push(a);
+      saveRender('meetings');
+    },
+  });
+}
+
+/* ---- the projects board ---- */
+
+function projectCard(p) {
+  const pr = projectProgress(p);
+  const next = nextMilestone(p);
+  const late = (p.milestones || []).filter((m) => !m.done && m.due && daysUntil(m.due) < 0).length;
+  const silent = p.status === 'active' ? projectSilence(p) : null;
+  return `<div class="pjcard click" data-project="${attr(p.id)}">
+    <div class="pjhead">
+      <div class="grow"><div class="pjname">${esc(p.name)}</div>
+        <div class="mini mut">${esc(projectStatusLabel(p.status))}${p.lead ? ' · ' + esc(p.lead) : ''}${p.due ? ' · due ' + esc(fmtDate(p.due)) : ''}</div></div>
+      ${p.status === 'active' || p.status === 'paused'
+        ? `<span class="pill ${HEALTH_PILL[p.health] || ''}">${esc(projectHealthLabel(p.health))}</span>`
+        : `<span class="pill ${STATE_PILL[p.status] || ''}">${esc(projectStatusLabel(p.status))}</span>`}
+    </div>
+    ${p.summary ? `<p class="pjsum">${esc(p.summary)}</p>` : ''}
+    <div class="pjbar"><span style="width:${pr.pct}%"></span></div>
+    <div class="pjmeta">
+      <span>${pr.counted ? `${pr.done}/${pr.total} milestones` : 'no milestones yet'}</span>
+      ${next ? `<span>next: ${esc(next.title)}${next.due ? ' · ' + esc(relDays(next.due)) : ''}</span>` : ''}
+      ${late ? `<span class="bad">${late} past its date</span>` : ''}
+      ${silent != null && silent > 14 ? `<span class="warn">no update for ${silent}d</span>` : ''}
+      ${(p.teacherIds || []).length ? `<span>${(p.teacherIds || []).length} on it</span>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderProjects(view, r) {
+  if (r.param) return renderProjectPage(view, r);
+  topbar('Projects', { actions: `<button class="btn primary" id="newproject">+ Project</button>` });
+
+  const live = liveProjects();
+  const active = projectsByStatus('active');
+  const atRisk = live.filter((p) => p.health !== 'on');
+  const late = overdueMilestones();
+  const ideas = projectsByStatus('idea');
+  const done = projectsByStatus('done');
+  const dropped = projectsByStatus('dropped');
+  const paused = projectsByStatus('paused');
+  const stale = active.filter((p) => { const d = projectSilence(p); return d == null || d > 14; });
+
+  const lines = [];
+  if (atRisk.length) lines.push({ kind: 'bad', html: `<b>${atRisk.length}</b> not on track` });
+  if (late.length) lines.push({ kind: 'warn', html: `<b>${late.length}</b> milestone${late.length === 1 ? '' : 's'} past its date` });
+  if (stale.length) lines.push({ kind: 'warn', html: `<b>${stale.length}</b> with no update in a fortnight` });
+  if (!lines.length && active.length) lines.push({ kind: 'good', html: 'Every live project on track and written up.' });
+
+  const board = (title, list, sub) => list.length
+    ? panel(`${title} · ${list.length}`, `<div class="pjgrid">${list.map(projectCard).join('')}</div>`, { sub })
+    : '';
+
+  view.innerHTML = `
+    ${DB.projects.length ? hero('Projects', `${faceName('work')} · what is running`, lines) : ''}
+
+    ${DB.projects.length ? `<div class="stats">
+      ${statBox(active.length, 'active', paused.length ? `<div class="delta flat">${paused.length} paused</div>` : '')}
+      ${statBox(atRisk.length, 'at risk or blocked', atRisk.length ? `<div class="delta down">needs a decision</div>` : `<div class="delta up">all on track</div>`)}
+      ${statBox(sum(live.map((p) => projectProgress(p).done)) + '/' + sum(live.map((p) => projectProgress(p).total)), 'milestones done',
+        late.length ? `<div class="delta down">${late.length} past its date</div>` : '')}
+      ${statBox(done.length, 'finished', ideas.length ? `<div class="delta flat">${ideas.length} on the shelf</div>` : '')}
+    </div>` : ''}
+
+    ${board('Active', active, 'Being worked on now')}
+    ${board('Paused', paused, 'Parked, not dropped')}
+    ${board('Ideas', ideas, 'Not started — no dates, no promises')}
+    ${board('Done', done)}
+    ${board('Dropped', dropped)}
+
+    ${DB.projects.length ? '' : emptyState('No projects yet',
+      'Anything that runs longer than a conversation belongs here — a new placement test, a curriculum rewrite, a teacher training cycle. Milestones give it a progress bar; updates give it a history.',
+      `<button class="btn primary" data-act="newproject">Add the first project</button>`)}`;
+
+  const open = () => projectDialog(null);
+  const btn = $('#newproject');
+  if (btn) btn.addEventListener('click', open);
+  on('[data-act="newproject"]', 'click', open, view);
+  on('[data-project]', 'click', (e, el) => go(`work/projects/${el.dataset.project}`), view);
+}
+
+function renderProjectPage(view, r) {
+  const p = projectById(r.param);
+  if (!p) { view.innerHTML = emptyState('Project not found', 'It may have been deleted. Go back to the board.'); return; }
+  const pr = projectProgress(p);
+  const ms = [...(p.milestones || [])].sort((a, b) =>
+    String(a.due || '9999').localeCompare(String(b.due || '9999')) || String(a.title).localeCompare(String(b.title)));
+  const updates = [...(p.updates || [])].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const meets = meetingsForProject(p.id);
+  const tasks = DB.tasks.filter((t) => t.project === p.id);
+  const people = (p.teacherIds || []).map(teacherById).filter(Boolean);
+  const silent = projectSilence(p);
+
+  topbar(p.name, {
+    crumb: `<a href="${href('work/projects')}">Projects</a> · ${esc(projectStatusLabel(p.status))}`,
+    actions: `<button class="btn sm ghost" id="pjmeeting">+ Meeting</button>
+      <button class="btn sm" id="pjms">+ Milestone</button>
+      <button class="btn primary" id="pjupdate">Log an update</button>
+      <button class="btn" id="pjedit">Edit</button>`,
+  });
+
+  view.innerHTML = `
+    <div class="stats">
+      ${statBox(`${pr.pct}%`, 'complete', pr.counted ? `<div class="delta flat">${pr.done} of ${pr.total} milestones</div>` : `<div class="delta flat">no milestones set</div>`)}
+      ${statBox(projectHealthLabel(p.health), 'health',
+        p.due ? `<div class="delta ${daysUntil(p.due) < 0 ? 'down' : 'flat'}">${daysUntil(p.due) < 0 ? 'overdue' : 'due'} ${esc(relDays(p.due))}</div>` : '')}
+      ${statBox(updates.length, 'updates logged', silent == null ? `<div class="delta down">never written up</div>`
+        : `<div class="delta ${silent > 14 ? 'down' : 'flat'}">last ${silent}d ago</div>`)}
+      ${statBox(meets.length, 'meetings about it', tasks.length ? `<div class="delta flat">${tasks.filter((t) => t.status !== 'done').length} open tasks</div>` : '')}
+    </div>
+
+    ${p.summary || p.lead || people.length || p.link ? panel('The project', `
+      ${p.summary ? `<p class="rp-p" style="margin-bottom:10px">${esc(p.summary)}</p>` : ''}
+      <div class="list">
+        ${p.lead ? `<div class="list-row"><div class="grow">Lead</div><span>${esc(p.lead)}</span></div>` : ''}
+        ${p.start ? `<div class="list-row"><div class="grow">Started</div><span>${esc(fmtDate(p.start))}</span></div>` : ''}
+        ${p.due ? `<div class="list-row"><div class="grow">Due</div><span class="pill ${dueClass(p.due)}">${esc(fmtDate(p.due))}</span></div>` : ''}
+        ${people.length ? `<div class="list-row"><div class="grow">Teachers on it</div><span>${people.map((t) => esc(t.name)).join(', ')}</span></div>` : ''}
+        ${p.link ? `<div class="list-row"><div class="grow">Link</div><a href="${attr(p.link)}" target="_blank" rel="noopener">open</a></div>` : ''}
+      </div>`) : ''}
+
+    ${panel(`Milestones · ${pr.counted ? `${pr.done}/${pr.total}` : '0'}`, ms.length ? `<div class="list">${ms.map((m) => `
+      <div class="list-row">
+        <label style="display:flex;align-items:center"><input type="checkbox" data-ms="${attr(m.id)}"${m.done ? ' checked' : ''}></label>
+        <div class="grow click" data-msedit="${attr(m.id)}"><div class="t ${m.done ? 'done-text' : ''}">${esc(m.title)}</div>
+          <div class="m">${m.done ? (m.doneOn ? 'done ' + esc(fmtDate(m.doneOn)) : 'done') : m.due ? 'due ' + esc(fmtDate(m.due)) : 'no date'}</div></div>
+        ${!m.done && m.due ? `<span class="pill ${dueClass(m.due)}">${esc(relDays(m.due))}</span>` : ''}
+      </div>`).join('')}</div>`
+      : emptyState('No milestones', 'Break it into the three or four things that have to be true. The progress bar is built from them.',
+        `<button class="btn sm" data-act="ms">Add a milestone</button>`), { flush: true })}
+
+    ${panel('Updates', updates.length ? updates.map((u) => `
+      <div class="daygroup">
+        <h4>${esc(fmtDate(u.date, { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' }))}</h4>
+        <div class="entry click" data-upd="${attr(u.id)}">
+          <span class="pill accent" style="align-self:flex-start">Update</span>
+          <div class="body">${esc(u.text)}</div>
+        </div>
+      </div>`).join('')
+      : emptyState('Nothing written up yet', 'An update is the record of what moved and what is stuck. It is what the monthly report quotes.',
+        `<button class="btn sm" data-act="upd">Log the first update</button>`), { flush: true })}
+
+    ${meets.length ? panel(`Meetings about this · ${meets.length}`, `<div class="list">${meets.map((m) => `
+      <div class="list-row click" data-meeting="${attr(m.id)}">
+        <div class="grow"><div class="t">${esc(m.title || meetingKindLabel(m.kind))}</div>
+          <div class="m">${esc(meetingKindLabel(m.kind))} · ${esc(fmtDate(m.date))}</div></div>
+        ${meetingActionCount(m).total ? `<span class="pill">${meetingActionCount(m).done}/${meetingActionCount(m).total} actions</span>` : ''}
+      </div>`).join('')}</div>`, { flush: true }) : ''}
+
+    ${tasks.length ? panel(`Tasks · ${tasks.length}`, `<div class="list">${tasks.map((t) => `
+      <div class="list-row click" data-task="${attr(t.id)}">
+        <div class="grow"><div class="t ${t.status === 'done' ? 'done-text' : ''}">${esc(t.title)}</div>
+          <div class="m">${esc(STATUSES.find((x) => x[0] === t.status)[1])}${t.due ? ' · ' + esc(fmtDate(t.due)) : ''}</div></div>
+        ${t.due && t.status !== 'done' ? `<span class="pill ${dueClass(t.due)}">${esc(relDays(t.due))}</span>` : ''}
+      </div>`).join('')}</div>`, { flush: true }) : ''}`;
+
+  $('#pjedit').addEventListener('click', () => projectDialog(p));
+  $('#pjms').addEventListener('click', () => milestoneDialog(p));
+  $('#pjupdate').addEventListener('click', () => updateDialog(p));
+  $('#pjmeeting').addEventListener('click', () => meetingDialog(null, { kind: 'project', project: p.id }));
+  on('[data-act="ms"]', 'click', () => milestoneDialog(p), view);
+  on('[data-act="upd"]', 'click', () => updateDialog(p), view);
+  on('[data-msedit]', 'click', (e, el) => {
+    const m = (p.milestones || []).find((x) => x.id === el.dataset.msedit);
+    if (m) milestoneDialog(p, m);
+  }, view);
+  on('[data-upd]', 'click', (e, el) => {
+    const u = (p.updates || []).find((x) => x.id === el.dataset.upd);
+    if (u) updateDialog(p, u);
+  }, view);
+  on('[data-meeting]', 'click', (e, el) => go(`work/meetings/${el.dataset.meeting}`), view);
+  on('[data-task]', 'click', (e, el) => {
+    const t = taskById(el.dataset.task);
+    if (t) taskDialog(t, t.face);
+  }, view);
+  view.addEventListener('change', (e) => {
+    if (!e.target.matches('[data-ms]')) return;
+    const m = (p.milestones || []).find((x) => x.id === e.target.dataset.ms);
+    if (!m) return;
+    m.done = e.target.checked;
+    m.doneOn = m.done ? todayISO() : '';
+    saveRender('projects');
+  });
+}
+PAGES['work/projects'] = renderProjects;
+
+/* ---- the meeting log ---- */
+
+function renderMeetings(view, r) {
+  if (r.param) return renderMeetingPage(view, r);
+  topbar('Meetings', { actions: `<button class="btn primary" id="newmeeting">+ Meeting</button>` });
+
+  const all = meetingsSorted();
+  const ahead = upcomingMeetings(14).filter((m) => m.date > todayISO());
+  const openActs = openMeetingActions();
+  const lateActs = openActs.filter((x) => x.a.due && daysUntil(x.a.due) < 0);
+  const thisMonth = meetingsIn(`${monthKey(new Date())}-01`, todayISO());
+
+  const lines = [];
+  if (lateActs.length) lines.push({ kind: 'bad', html: `<b>${lateActs.length}</b> action${lateActs.length === 1 ? '' : 's'} past its date` });
+  if (openActs.length) lines.push({ kind: 'warn', html: `<b>${openActs.length}</b> open action${openActs.length === 1 ? '' : 's'}` });
+  if (ahead.length) lines.push({ kind: '', html: `<b>${ahead.length}</b> in the diary` });
+  if (!lines.length && all.length) lines.push({ kind: 'good', html: 'Nothing outstanding out of any meeting.' });
+
+  const byMonth = {};
+  all.forEach((m) => { (byMonth[String(m.date).slice(0, 7)] = byMonth[String(m.date).slice(0, 7)] || []).push(m); });
+
+  const row = (m) => {
+    const c = meetingActionCount(m);
+    const who = meetingTeachers(m).length + (m.attendees ? m.attendees.split(',').filter((x) => x.trim()).length : 0);
+    return `<div class="list-row click" data-meeting="${attr(m.id)}">
+      <span class="pill ${m.kind === 'mgmt' ? 'accent' : ''}">${esc(meetingKindLabel(m.kind))}</span>
+      <div class="grow"><div class="t">${esc(m.title || meetingKindLabel(m.kind))}</div>
+        <div class="m">${esc(fmtDate(m.date))}${m.time ? ' · ' + esc(m.time) : ''}${who ? ` · ${who} there` : ''}${m.project ? ' · ' + esc(projectName(m.project)) : ''}</div></div>
+      ${c.total ? `<span class="pill ${c.done === c.total ? 'ok' : 'warn'}">${c.done}/${c.total}</span>` : ''}
+    </div>`;
+  };
+
+  view.innerHTML = `
+    ${all.length ? hero('Meetings', `${faceName('work')} · the room, not the desk`, lines) : ''}
+
+    ${all.length ? `<div class="stats">
+      ${statBox(all.length, 'logged', thisMonth.length ? `<div class="delta flat">${thisMonth.length} this month</div>` : '')}
+      ${statBox(ahead.length, 'in the next fortnight')}
+      ${statBox(openActs.length, 'open actions', lateActs.length ? `<div class="delta down">${lateActs.length} past its date</div>` : '')}
+      ${statBox(new Set(all.map((m) => m.kind)).size, 'kinds of meeting')}
+    </div>` : ''}
+
+    ${ahead.length ? panel('Coming up', `<div class="list">${ahead.map(row).join('')}</div>`, { flush: true }) : ''}
+
+    ${openActs.length ? panel(`Open actions · ${openActs.length}`, `<div class="list">${openActs.slice(0, 12).map(({ m, a }) => `
+      <div class="list-row click" data-meeting="${attr(m.id)}">
+        <div class="grow"><div class="t">${esc(a.text)}</div>
+          <div class="m">${a.owner ? esc(a.owner) + ' · ' : ''}${esc(m.title || meetingKindLabel(m.kind))} · ${esc(fmtDate(m.date))}</div></div>
+        ${a.due ? `<span class="pill ${dueClass(a.due)}">${esc(relDays(a.due))}</span>` : '<span class="pill">no date</span>'}
+      </div>`).join('')}</div>`, { flush: true, sub: 'Agreed in a room and not yet ticked' }) : ''}
+
+    ${Object.keys(byMonth).sort().reverse().map((mk) => panel(deptMonthName(mk) + ` · ${byMonth[mk].length}`,
+      `<div class="list">${byMonth[mk].map(row).join('')}</div>`, { flush: true })).join('')}
+
+    ${all.length ? '' : emptyState('No meetings logged',
+      'Department meetings, meetings with management, project meetings, parents — anything with more than one person in the room. Each one keeps its decisions and its actions, and both land in the monthly report.',
+      `<button class="btn primary" data-act="newmeeting">Log the first meeting</button>`)}`;
+
+  const open = () => meetingDialog(null);
+  const btn = $('#newmeeting');
+  if (btn) btn.addEventListener('click', open);
+  on('[data-act="newmeeting"]', 'click', open, view);
+  on('[data-meeting]', 'click', (e, el) => go(`work/meetings/${el.dataset.meeting}`), view);
+}
+
+function renderMeetingPage(view, r) {
+  const m = meetingById(r.param);
+  if (!m) { view.innerHTML = emptyState('Meeting not found', 'It may have been deleted. Go back to the log.'); return; }
+  const acts = [...(m.actions || [])].sort((a, b) =>
+    Number(a.done) - Number(b.done) || String(a.due || '9999').localeCompare(String(b.due || '9999')));
+  const c = meetingActionCount(m);
+  const present = meetingTeachers(m);
+
+  topbar(m.title || meetingKindLabel(m.kind), {
+    crumb: `<a href="${href('work/meetings')}">Meetings</a> · ${esc(meetingKindLabel(m.kind))} · ${esc(fmtDate(m.date))}${m.time ? ' · ' + esc(m.time) : ''}`,
+    actions: `<button class="btn" id="mtaction">+ Action</button><button class="btn primary" id="mtedit">Edit</button>`,
+  });
+
+  const block = (title, text) => text ? panel(title, `<p class="rp-p" style="white-space:pre-wrap">${esc(text)}</p>`) : '';
+
+  view.innerHTML = `
+    <div class="stats">
+      ${statBox(fmtDate(m.date, { day: 'numeric', month: 'short' }), 'held', m.time ? `<div class="delta flat">${esc(m.time)}</div>` : '')}
+      ${statBox(present.length + (m.attendees ? m.attendees.split(',').filter((x) => x.trim()).length : 0), 'people there',
+        present.length ? `<div class="delta flat">${present.length} from the register</div>` : '')}
+      ${statBox(`${c.done}/${c.total}`, 'actions closed', c.total && c.done === c.total ? `<div class="delta up">all done</div>` : '')}
+      ${statBox(m.project ? projectName(m.project) : '—', 'project', m.project ? `<div class="delta flat">linked</div>` : '')}
+    </div>
+
+    ${present.length || m.attendees ? panel('Present', `<div class="wrap">
+      ${present.map((t) => `<span class="pill click" data-teacher="${attr(t.id)}">${esc(t.name)}</span>`).join('')}
+      ${(m.attendees || '').split(',').map((x) => x.trim()).filter(Boolean).map((x) => `<span class="pill">${esc(x)}</span>`).join('')}
+    </div>`) : ''}
+
+    ${block('Agenda', m.agenda)}
+    ${block('Notes', m.notes)}
+    ${block('Decisions', m.decisions)}
+
+    ${panel(`Actions · ${c.total}`, acts.length ? `<div class="list">${acts.map((a) => `
+      <div class="list-row">
+        <label style="display:flex;align-items:center"><input type="checkbox" data-act-id="${attr(a.id)}"${a.done ? ' checked' : ''}></label>
+        <div class="grow click" data-actedit="${attr(a.id)}"><div class="t ${a.done ? 'done-text' : ''}">${esc(a.text)}</div>
+          <div class="m">${a.owner ? esc(a.owner) : 'nobody named'}${a.due ? ' · due ' + esc(fmtDate(a.due)) : ''}</div></div>
+        ${!a.done && a.due ? `<span class="pill ${dueClass(a.due)}">${esc(relDays(a.due))}</span>` : ''}
+      </div>`).join('')}</div>`
+      : emptyState('No actions', 'A meeting that produced nothing to do is worth recording as exactly that.',
+        `<button class="btn sm" data-act="newact">Add an action</button>`), { flush: true })}
+
+    ${m.project ? panel('Project', `<div class="list"><div class="list-row click" data-project="${attr(m.project)}">
+      <div class="grow"><div class="t">${esc(projectName(m.project))}</div>
+        <div class="m">${esc(projectStatusLabel((projectById(m.project) || {}).status))}</div></div>
+      <span class="pill">open</span></div></div>`, { flush: true }) : ''}`;
+
+  $('#mtedit').addEventListener('click', () => meetingDialog(m));
+  $('#mtaction').addEventListener('click', () => meetingActionDialog(m));
+  on('[data-act="newact"]', 'click', () => meetingActionDialog(m), view);
+  on('[data-actedit]', 'click', (e, el) => {
+    const a = (m.actions || []).find((x) => x.id === el.dataset.actedit);
+    if (a) meetingActionDialog(m, a);
+  }, view);
+  on('[data-teacher]', 'click', (e, el) => go(`work/teachers/${el.dataset.teacher}`), view);
+  on('[data-project]', 'click', (e, el) => go(`work/projects/${el.dataset.project}`), view);
+  view.addEventListener('change', (e) => {
+    if (!e.target.matches('[data-act-id]')) return;
+    const a = (m.actions || []).find((x) => x.id === e.target.dataset.actId);
+    if (a) { a.done = e.target.checked; saveRender('meetings'); }
+  });
+}
+PAGES['work/meetings'] = renderMeetings;
+
 /* ============================================================ 6. CSV reports */
 
 /** Papa with header:false, then objects built by hand so repeated Google-Forms
@@ -5487,7 +6214,8 @@ const SOURCES = {
   exams: { label: 'Exams', color: '#ef6b6b' },
   deadlines: { label: 'Deadlines', color: '#f0b344' },
   oneonones: { label: '1-1s logged', color: '#c42a4a' },
-  admissions: { label: 'Admissions', color: '#5b8def' },
+  projects: { label: 'Project dates', color: '#5b8def' },
+  meetings: { label: 'Meetings', color: '#8b7cf6' },
 };
 const hidden = () => new Set(DB.settings.hiddenSources || []);
 function toggleSource(key) {
@@ -5553,17 +6281,29 @@ function deskEvents(from, to) {
       });
     }));
   }
-  if (!h.has('admissions')) {
-    admissionDates().forEach((ev) => {
+  if (!h.has('projects')) {
+    projectDates().forEach((ev) => {
       const d = fromISO(ev.date);
       if (!d || d < from || d >= to) return;
-      const timed = ev.kind === 'interview' && ev.time;
       out.push({
-        id: 'adm-' + ev.appId + ev.kind + ev.date, title: ev.label,
-        start: timed ? atTime(d, ev.time) : startOfDay(d),
-        end: timed ? new Date(atTime(d, ev.time).getTime() + 3600e3) : startOfDay(d),
-        allDay: !timed, source: 'admissions', color: SOURCES.admissions.color,
-        meta: ev.kind, link: `adm/applications/${ev.appId}`,
+        id: 'pj-' + ev.projectId + ev.kind + ev.date, title: ev.label,
+        start: startOfDay(d), end: startOfDay(d), allDay: true,
+        source: 'projects', color: SOURCES.projects.color,
+        meta: ev.kind, link: `work/projects/${ev.projectId}`,
+      });
+    });
+  }
+  if (!h.has('meetings')) {
+    DB.meetings.forEach((m) => {
+      const d = fromISO(m.date);
+      if (!d || d < from || d >= to) return;
+      const timed = !!m.time;
+      out.push({
+        id: 'mt-' + m.id, title: m.title || meetingKindLabel(m.kind),
+        start: timed ? atTime(d, m.time) : startOfDay(d),
+        end: timed ? new Date(atTime(d, m.time).getTime() + 3600e3) : startOfDay(d),
+        allDay: !timed, source: 'meetings', color: SOURCES.meetings.color,
+        meta: meetingKindLabel(m.kind), link: `work/meetings/${m.id}`,
       });
     });
   }
@@ -5980,8 +6720,8 @@ function renderSettings(view) {
         <div class="list-row"><div class="grow">Habits</div><span class="num">${habitItems(true).length}${Object.keys(DB.habits.ticks || {}).length ? ` <span class="mut">· ${Object.keys(DB.habits.ticks).length} days ticked</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Goals</div><span class="num">${goalItems().length}${(DB.goals.reviews || []).length ? ` <span class="mut">· ${DB.goals.reviews.length} reviews</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Health days</div><span class="num">${(DB.health.days || []).length}</span></div>
-        <div class="list-row"><div class="grow">Applications</div><span class="num">${allApps().length}${(DB.admissions.essays || []).length ? ` <span class="mut">· ${DB.admissions.essays.length} essays</span>` : ''}</span></div>
-        <div class="list-row"><div class="grow">Recommenders</div><span class="num">${(DB.admissions.recommenders || []).length}${(DB.admissions.tests || []).length ? ` <span class="mut">· ${DB.admissions.tests.length} tests</span>` : ''}</span></div>
+        <div class="list-row"><div class="grow">Projects</div><span class="num">${DB.projects.length}${DB.projects.length ? ` <span class="mut">· ${liveProjects().length} live · ${sum(DB.projects.map((p) => (p.milestones || []).length))} milestones</span>` : ''}</span></div>
+        <div class="list-row"><div class="grow">Meetings</div><span class="num">${DB.meetings.length}${DB.meetings.length ? ` <span class="mut">· ${openMeetingActions().length} open actions</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Local cache</div><span class="num">${Math.round(bytes / 1024)} KB</span></div>
       </div>`, { flush: true })}
 
@@ -6333,8 +7073,9 @@ function renderToday(view) {
   const doneHabits = live.filter((h) => isTicked(h.id, iso));
 
   const deadlines = FACE_IDS.flatMap((f) => deadlineRows(f).map((d) => ({ ...d, face: f })));
-  const admSoon = admissionDates().filter((d) => { const n = daysUntil(d.date); return n >= 0 && n <= 30; });
-  const admLate = admissionAlerts().filter((x) => x.kind === 'bad');
+  const pjSoon = projectDates().filter((d) => { const n = daysUntil(d.date); return n >= 0 && n <= 30; });
+  const pjLate = overdueMilestones();
+  const mtSoon = upcomingMeetings(7);
   const overdue = deadlines.filter((d) => daysUntil(d.due) < 0);
   const today = deadlines.filter((d) => daysUntil(d.due) === 0);
   const soon = deadlines.filter((d) => { const n = daysUntil(d.due); return n > 0 && n <= 7; });
@@ -6351,8 +7092,9 @@ function renderToday(view) {
   else if (nextCls) lines.push({ kind: '', html: `${esc(courseName(nextCls.courseId) || 'Class')} at <b>${esc(nextCls.start)}</b>` });
   if (owedHabits.length) lines.push({ kind: '', html: `<b>${owedHabits.length}</b> ${owedHabits.length === 1 ? 'habit' : 'habits'} owed` });
   if (owed.length) lines.push({ kind: '', html: `<b>${owed.length}</b> you owe teachers` });
-  if (admLate.length) lines.push({ kind: 'bad', html: `<b>${admLate.length}</b> application${admLate.length === 1 ? '' : 's'} past a deadline` });
-  else if (admSoon.length) lines.push({ kind: admSoon[0] && daysUntil(admSoon[0].date) <= 7 ? 'warn' : '', html: `${esc(admSoon[0].label.split(' — ')[0])} <b>${esc(relDays(admSoon[0].date))}</b>` });
+  if (pjLate.length) lines.push({ kind: 'bad', html: `<b>${pjLate.length}</b> milestone${pjLate.length === 1 ? '' : 's'} past its date` });
+  else if (pjSoon.length) lines.push({ kind: daysUntil(pjSoon[0].date) <= 7 ? 'warn' : '', html: `${esc(pjSoon[0].label)} <b>${esc(relDays(pjSoon[0].date))}</b>` });
+  if (mtSoon.length) lines.push({ kind: '', html: `<b>${mtSoon.length}</b> meeting${mtSoon.length === 1 ? '' : 's'} this week` });
   if (!lines.length) lines.push({ kind: 'good', html: 'Nothing owed, nothing overdue. Rare and good.' });
 
   topbar(' ');
@@ -6373,9 +7115,10 @@ function renderToday(view) {
       ${statBox(`${doneHabits.length}/${live.length}`, 'habits today',
         owedHabits.length ? `<div class="delta flat">${owedHabits.length} owed</div>` : live.length ? `<div class="delta up">all done</div>` : '')}
       ${statBox(classes.length, 'classes today', nextCls ? `<div class="delta flat">next ${esc(nextCls.start)}</div>` : '')}
-      ${admSoon.length || allApps().length
-        ? statBox(admSoon.length ? daysUntil(admSoon[0].date) : '—', 'days to the next application date',
-          admSoon.length ? `<div class="delta flat">${esc(admSoon[0].label.split(' — ')[0])}</div>` : `<div class="delta flat">${openApps().length} open</div>`)
+      ${pjSoon.length || DB.projects.length
+        ? statBox(pjSoon.length ? daysUntil(pjSoon[0].date) : '—', 'days to the next project date',
+          pjSoon.length ? `<div class="delta flat">${esc(pjSoon[0].label)}</div>`
+            : `<div class="delta flat">${liveProjects().length} live project${liveProjects().length === 1 ? '' : 's'}</div>`)
         : statBox(ne ? daysUntil(ne.date) : '—', 'days to next exam', ne ? `<div class="delta flat">${esc(ne.course)}</div>` : '')}
     </div>
 
@@ -6414,11 +7157,18 @@ function renderToday(view) {
         : emptyState('Nothing outstanding', 'Tasks you take on in a 1-1 appear here until you tick them off.'), { flush: true })}
     </div>
 
-    ${admSoon.length ? panel('Admissions, next 30 days', `<div class="list">${admSoon.slice(0, 8).map((d) => `
-      <div class="list-row click" data-goto="adm/applications/${attr(d.appId)}">
-        <div class="grow"><div class="t">${esc(d.label)}</div><div class="m">${esc(d.kind)}${d.time ? ' · ' + esc(d.time) : ''}</div></div>
+    ${mtSoon.length ? panel('Meetings this week', `<div class="list">${mtSoon.slice(0, 8).map((m) => `
+      <div class="list-row click" data-goto="work/meetings/${attr(m.id)}">
+        <div class="grow"><div class="t">${esc(m.title || meetingKindLabel(m.kind))}</div>
+          <div class="m">${esc(meetingKindLabel(m.kind))}${m.time ? ' · ' + esc(m.time) : ''}${m.project ? ' · ' + esc(projectName(m.project)) : ''}</div></div>
+        <span class="pill ${dueClass(m.date)}">${esc(fmtDay(m.date))}</span></div>`).join('')}</div>`,
+      { flush: true, actions: `<button class="btn sm ghost" data-goto="work/meetings">All meetings</button>` }) : ''}
+
+    ${pjLate.length || pjSoon.length ? panel('Project dates', `<div class="list">${[...pjLate, ...pjSoon].slice(0, 8).map((d) => `
+      <div class="list-row click" data-goto="work/projects/${attr(d.projectId)}">
+        <div class="grow"><div class="t">${esc(d.label)}</div><div class="m">${esc(d.kind)} · ${esc(projectName(d.projectId))}</div></div>
         <span class="pill ${dueClass(d.date)}">${esc(fmtDay(d.date))}</span></div>`).join('')}</div>`,
-      { flush: true, actions: `<button class="btn sm ghost" data-goto="adm/overview">Admissions</button>` }) : ''}
+      { flush: true, actions: `<button class="btn sm ghost" data-goto="work/projects">All projects</button>` }) : ''}
 
     ${soon.length ? panel('Rest of the week', `<div class="list">${soon.map(dlRow).join('')}</div>`, { flush: true }) : ''}`;
 
@@ -6980,1019 +7730,6 @@ function renderHealth(view) {
 }
 PAGES['shared/health'] = renderHealth;
 
-/* ========================================================= 10. admissions ==
-   Universities and scholarships: one application per row, each carrying its
-   own requirement checklist, essays, recommenders, interviews and money.     */
-
-const STAGES = [
-  ['researching', 'Researching'], ['preparing', 'Preparing'],
-  ['submitted', 'Submitted'], ['interview', 'Interview'], ['decided', 'Decided'],
-];
-const OUTCOMES = [
-  ['', 'No word yet'], ['accepted', 'Accepted'], ['waitlisted', 'Waitlisted'],
-  ['deferred', 'Deferred'], ['rejected', 'Rejected'], ['withdrawn', 'Withdrawn'],
-];
-const ROUNDS = [['', 'No round'], ['ED', 'Early Decision'], ['ED2', 'Early Decision II'],
-  ['EA', 'Early Action'], ['REA', 'Restrictive Early Action'], ['RD', 'Regular Decision'], ['rolling', 'Rolling']];
-const REC_STATES = [['asked', 'Asked'], ['accepted', 'Agreed'], ['submitted', 'Submitted']];
-
-/** What a first-time application almost always needs. Editable per app. */
-const REQ_TEMPLATE = {
-  university: ['Transcript', 'Personal statement', 'Recommendation letters', 'English test score',
-    'SAT / ACT score', 'Passport copy', 'CV / résumé', 'Financial documents', 'Application fee or waiver'],
-  scholarship: ['Motivation letter', 'Recommendation letters', 'Transcript', 'Proof of admission',
-    'Financial need documents', 'CV / résumé', 'Passport copy'],
-};
-
-const adm = () => DB.admissions;
-const allApps = () => adm().apps || [];
-const appById = (id) => allApps().find((a) => a.id === id);
-const openApps = () => allApps().filter((a) => a.status !== 'decided' || !a.outcome);
-const essayById = (id) => (adm().essays || []).find((e) => e.id === id);
-const recById = (id) => (adm().recommenders || []).find((r) => r.id === id);
-const appsUsingEssay = (id) => allApps().filter((a) => (a.essayIds || []).includes(id));
-const appsForRec = (id) => allApps().filter((a) => (a.recs || []).some((r) => r.recId === id));
-
-const appTitle = (a) => [a.school, a.program].filter(Boolean).join(' · ') || 'Untitled application';
-const stageLabel = (v) => (STAGES.find((s) => s[0] === v) || ['', v])[1];
-const outcomeLabel = (v) => (OUTCOMES.find((o) => o[0] === v) || ['', v])[1];
-
-/** Requirement progress for one application. */
-function reqProgress(a) {
-  const list = a.reqs || [];
-  const done = list.filter((r) => r.done).length;
-  return { done, total: list.length, pct: list.length ? Math.round((done / list.length) * 100) : 0 };
-}
-/** A recommender counts as settled once the letter is in. */
-function recProgress(a) {
-  const list = a.recs || [];
-  return { done: list.filter((r) => r.status === 'submitted').length, total: list.length };
-}
-
-/** Everything the admissions face owes a date to — deadlines, decisions, interviews. */
-function admissionDates() {
-  const out = [];
-  allApps().forEach((a) => {
-    if (a.status === 'decided') {
-      if (a.replyBy) out.push({ appId: a.id, date: a.replyBy, kind: 'reply', label: `${appTitle(a)} — reply by` });
-      return;
-    }
-    if (a.deadline && a.status !== 'submitted' && a.status !== 'interview') {
-      out.push({ appId: a.id, date: a.deadline, kind: 'deadline', label: `${appTitle(a)} — deadline` });
-    }
-    if (a.decisionDate && a.status !== 'decided') {
-      out.push({ appId: a.id, date: a.decisionDate, kind: 'decision', label: `${appTitle(a)} — decision due` });
-    }
-    (a.interviews || []).filter((i) => !i.done && i.date).forEach((i) => {
-      out.push({ appId: a.id, date: i.date, time: i.time || '', kind: 'interview', label: `${appTitle(a)} — interview` });
-    });
-  });
-  return out.sort((x, y) => x.date.localeCompare(y.date));
-}
-const nextAdmissionDate = () => admissionDates().find((d) => daysUntil(d.date) >= 0) || null;
-
-/** Money: what an offer actually costs once aid is subtracted. */
-const netCost = (a) => Math.max(0, (Number(a.cost) || 0) - (Number(a.aid) || 0));
-function feesDue() {
-  const by = {};
-  allApps().filter((a) => !a.feeWaived && a.status !== 'decided' && Number(a.fee) > 0)
-    .forEach((a) => { const c = a.currency || 'USD'; by[c] = (by[c] || 0) + Number(a.fee); });
-  return by;
-}
-
-/** The things that will sink an application if nobody looks at them. */
-function admissionAlerts() {
-  const out = [];
-  const soon = (iso) => { const n = daysUntil(iso); return n != null && n <= 21; };
-  allApps().forEach((a) => {
-    if (a.status === 'decided') return;
-    const near = a.deadline && soon(a.deadline);
-    const days = a.deadline ? daysUntil(a.deadline) : null;
-    if (a.deadline && days < 0 && a.status !== 'submitted') {
-      out.push({ kind: 'bad', appId: a.id, text: `${appTitle(a)} — deadline passed ${-days} day${-days === 1 ? '' : 's'} ago and it is not submitted` });
-      return;
-    }
-    if (!near) return;
-    const rp = reqProgress(a);
-    if (rp.total && rp.done < rp.total) {
-      out.push({ kind: 'warn', appId: a.id, text: `${appTitle(a)} — ${rp.total - rp.done} requirement${rp.total - rp.done === 1 ? '' : 's'} outstanding, ${relDays(a.deadline)}` });
-    }
-    const pending = (a.recs || []).filter((r) => r.status !== 'submitted');
-    if (pending.length) {
-      out.push({ kind: 'warn', appId: a.id, text: `${appTitle(a)} — ${pending.length} letter${pending.length === 1 ? '' : 's'} not in yet, ${relDays(a.deadline)}` });
-    }
-    if (!(a.recs || []).length) {
-      out.push({ kind: 'warn', appId: a.id, text: `${appTitle(a)} — no recommender asked yet, ${relDays(a.deadline)}` });
-    }
-    const unfinished = (a.essayIds || []).map(essayById).filter((e) => e && e.status !== 'final');
-    if (unfinished.length) {
-      out.push({ kind: 'warn', appId: a.id, text: `${appTitle(a)} — ${unfinished.length} essay${unfinished.length === 1 ? '' : 's'} still in draft, ${relDays(a.deadline)}` });
-    }
-    if (!a.feeWaived && Number(a.fee) > 0 && a.status === 'preparing') {
-      out.push({ kind: '', appId: a.id, text: `${appTitle(a)} — ${money(Number(a.fee), a.currency || 'USD')} fee still to pay` });
-    }
-  });
-  return out;
-}
-
-
-/* ---- dialogs ---- */
-
-const ADM_CUR = ['USD', 'EUR', 'GBP', 'UZS', 'KRW', 'JPY', 'TRY', 'RUB', 'CNY', 'CHF', 'CAD', 'AUD', 'SGD', 'AED'];
-const FITS = [['', 'Unrated'], ['reach', 'Reach'], ['target', 'Target'], ['safety', 'Safety']];
-const LEVELS = ['Bachelor', 'Master', 'Exchange', 'Summer school', 'Foundation', 'PhD'];
-const curOptions = (sel) => ADM_CUR.map((c) => `<option value="${c}"${c === sel ? ' selected' : ''}>${c}</option>`).join('');
-
-function appDialog(existing) {
-  const a = existing || {
-    id: uid(), kind: 'university', school: '', program: '', level: 'Bachelor', country: '',
-    round: '', deadline: '', decisionDate: '', status: 'researching', outcome: '', fit: '',
-    portal: '', fee: '', feeWaived: false, cost: '', aid: '', currency: 'USD', notes: '',
-    reqs: [], essayIds: [], recs: [], interviews: [], created: todayISO(),
-  };
-  openDialog({
-    title: existing ? 'Edit application' : 'New application',
-    wide: true,
-    body: `
-      <div class="row">
-        <label class="f"><span>University or funder</span><input name="school" value="${attr(a.school)}" placeholder="e.g. KAIST"></label>
-        <label class="f"><span>Kind</span><select name="kind">
-          <option value="university"${a.kind === 'university' ? ' selected' : ''}>University</option>
-          <option value="scholarship"${a.kind === 'scholarship' ? ' selected' : ''}>Scholarship</option>
-        </select></label>
-      </div>
-      <div class="row">
-        <label class="f"><span>Programme or award</span><input name="program" value="${attr(a.program || '')}" placeholder="e.g. BSc Computer Science"></label>
-        <label class="f"><span>Level</span><input name="level" value="${attr(a.level || '')}" list="admlevels"></label>
-      </div>
-      <datalist id="admlevels">${LEVELS.map((l) => `<option value="${l}">`).join('')}</datalist>
-      <div class="row">
-        <label class="f"><span>Country</span><input name="country" value="${attr(a.country || '')}" placeholder="South Korea"></label>
-        <label class="f"><span>Round</span><select name="round">
-          ${ROUNDS.map(([v, l]) => `<option value="${v}"${a.round === v ? ' selected' : ''}>${l}</option>`).join('')}
-        </select></label>
-      </div>
-      <div class="row">
-        <label class="f"><span>Deadline</span><input name="deadline" type="date" value="${attr(a.deadline || '')}"></label>
-        <label class="f"><span>Decision expected</span><input name="decisionDate" type="date" value="${attr(a.decisionDate || '')}"></label>
-      </div>
-      <div class="row">
-        <label class="f"><span>Stage</span><select name="status">
-          ${STAGES.map(([v, l]) => `<option value="${v}"${a.status === v ? ' selected' : ''}>${l}</option>`).join('')}
-        </select></label>
-        <label class="f"><span>How likely</span><select name="fit">
-          ${FITS.map(([v, l]) => `<option value="${v}"${(a.fit || '') === v ? ' selected' : ''}>${l}</option>`).join('')}
-        </select></label>
-      </div>
-      <label class="f"><span>Application portal</span><input name="portal" value="${attr(a.portal || '')}" placeholder="https://…"></label>
-      <div class="row">
-        <label class="f"><span>Currency</span><select name="currency">${curOptions(a.currency || 'USD')}</select></label>
-        <label class="f"><span>Application fee</span><input name="fee" inputmode="decimal" value="${attr(a.fee || '')}"></label>
-        <label class="f"><span><input type="checkbox" name="feeWaived"${a.feeWaived ? ' checked' : ''}> Fee waived</span></label>
-      </div>
-      <div class="row">
-        <label class="f"><span>Cost a year (tuition + living)</span><input name="cost" inputmode="decimal" value="${attr(a.cost || '')}"></label>
-        <label class="f"><span>Aid or scholarship a year</span><input name="aid" inputmode="decimal" value="${attr(a.aid || '')}"></label>
-      </div>
-      <label class="f"><span>Notes</span><textarea name="notes" rows="3" placeholder="Eligibility, who to email, anything odd about this one">${esc(a.notes || '')}</textarea></label>
-      ${existing ? '' : `<label class="f"><span><input type="checkbox" name="tpl" checked> Start with the usual ${a.kind === 'scholarship' ? 'scholarship' : 'application'} checklist</span></label>`}`,
-    extraFooter: existing ? `<button type="button" class="btn danger left" id="delapp">Delete</button>` : '',
-    onOpen: (dlg, close) => {
-      const del = $('#delapp', dlg);
-      if (del) del.addEventListener('click', () => {
-        close();
-        confirmDialog('Delete application', `“${appTitle(a)}” goes, with its checklist, interviews and links. Essays and recommenders stay.`, () => {
-          adm().apps = allApps().filter((x) => x.id !== a.id);
-          save('admissions');
-          if (route().param === a.id) go('adm/applications'); else render();
-          toast('Application deleted');
-        });
-      });
-    },
-    onSubmit: (data) => {
-      const school = data.school.trim();
-      if (!school) { toast('An application needs a university or funder.', 'bad'); return false; }
-      const wasNew = !existing;
-      Object.assign(a, {
-        school, program: data.program.trim(), kind: data.kind, level: data.level.trim(),
-        country: data.country.trim(), round: data.round, deadline: data.deadline || '',
-        decisionDate: data.decisionDate || '', status: data.status, fit: data.fit,
-        portal: data.portal.trim(), currency: data.currency,
-        fee: data.fee.trim(), feeWaived: !!data.feeWaived,
-        cost: data.cost.trim(), aid: data.aid.trim(), notes: data.notes.trim(),
-      });
-      if (wasNew) {
-        if (data.tpl) a.reqs = (REQ_TEMPLATE[a.kind] || []).map((text) => ({ id: uid(), text, done: false, due: '' }));
-        adm().apps.push(a);
-      }
-      saveRender('admissions');
-      if (wasNew) go(`adm/applications/${a.id}`);
-    },
-  });
-}
-
-/** One line on an application's checklist. */
-function reqDialog(a, existing) {
-  const q = existing || { id: uid(), text: '', due: '', done: false, note: '' };
-  openDialog({
-    title: existing ? 'Edit requirement' : 'Add requirement',
-    body: `
-      <label class="f"><span>What is needed</span><input name="text" value="${attr(q.text)}" placeholder="e.g. Sealed transcript"></label>
-      <div class="row">
-        <label class="f"><span>Needed by (optional)</span><input name="due" type="date" value="${attr(q.due || '')}"></label>
-        <label class="f"><span><input type="checkbox" name="done"${q.done ? ' checked' : ''}> Done</span></label>
-      </div>
-      <label class="f"><span>Note</span><input name="note" value="${attr(q.note || '')}" placeholder="Where it is, who sends it"></label>`,
-    extraFooter: existing ? `<button type="button" class="btn danger left" id="delreq">Delete</button>` : '',
-    onOpen: (dlg, close) => {
-      const del = $('#delreq', dlg);
-      if (del) del.addEventListener('click', () => {
-        a.reqs = (a.reqs || []).filter((x) => x.id !== q.id);
-        close(); saveRender('admissions');
-      });
-    },
-    onSubmit: (data) => {
-      const text = data.text.trim();
-      if (!text) { toast('Name the requirement.', 'bad'); return false; }
-      Object.assign(q, { text, due: data.due || '', done: !!data.done, note: data.note.trim() });
-      if (!existing) (a.reqs = a.reqs || []).push(q);
-      saveRender('admissions');
-    },
-  });
-}
-
-/** Paste a whole requirement list off a university page, one per line. */
-function bulkReqDialog(a) {
-  openDialog({
-    title: 'Paste a requirement list',
-    submitLabel: 'Add them',
-    body: `<p class="mini">One per line, straight off their page. Anything already on the checklist is skipped.</p>
-      <label class="f"><span>Requirements</span><textarea name="text" rows="10" placeholder="Transcript&#10;Two letters of recommendation&#10;IELTS 6.5"></textarea></label>`,
-    onSubmit: (data) => {
-      const have = new Set((a.reqs || []).map((r) => norm(r.text)));
-      const lines = data.text.split('\n').map((s) => s.replace(/^[\s•\-*\d.)]+/, '').trim())
-        .filter((s) => s && !have.has(norm(s)));
-      if (!lines.length) { toast('Nothing new in that list.', 'bad'); return false; }
-      lines.forEach((text) => (a.reqs = a.reqs || []).push({ id: uid(), text, done: false, due: '' }));
-      saveRender('admissions');
-      toast(`${lines.length} requirement${lines.length === 1 ? '' : 's'} added`);
-    },
-  });
-}
-
-function interviewDialog(a, existing) {
-  const iv = existing || { id: uid(), date: '', time: '', mode: 'online', who: '', notes: '', done: false };
-  openDialog({
-    title: existing ? 'Edit interview' : 'Add interview',
-    body: `
-      <div class="row">
-        <label class="f"><span>Date</span><input name="date" type="date" value="${attr(iv.date || '')}"></label>
-        <label class="f"><span>Time</span><input name="time" type="time" value="${attr(iv.time || '')}"></label>
-      </div>
-      <div class="row">
-        <label class="f"><span>Where</span><select name="mode">
-          ${['online', 'on campus', 'phone', 'recorded'].map((m) => `<option value="${m}"${iv.mode === m ? ' selected' : ''}>${titleCase(m)}</option>`).join('')}
-        </select></label>
-        <label class="f"><span>With whom</span><input name="who" value="${attr(iv.who || '')}" placeholder="Admissions officer, alumnus…"></label>
-      </div>
-      <label class="f"><span>Notes</span><textarea name="notes" rows="3" placeholder="Questions to ask, what they asked">${esc(iv.notes || '')}</textarea></label>
-      <label class="f"><span><input type="checkbox" name="done"${iv.done ? ' checked' : ''}> Already happened</span></label>`,
-    extraFooter: existing ? `<button type="button" class="btn danger left" id="deliv">Delete</button>` : '',
-    onOpen: (dlg, close) => {
-      const del = $('#deliv', dlg);
-      if (del) del.addEventListener('click', () => {
-        a.interviews = (a.interviews || []).filter((x) => x.id !== iv.id);
-        close(); saveRender('admissions');
-      });
-    },
-    onSubmit: (data) => {
-      if (!data.date) { toast('An interview needs a date.', 'bad'); return false; }
-      Object.assign(iv, {
-        date: data.date, time: data.time || '', mode: data.mode,
-        who: data.who.trim(), notes: data.notes.trim(), done: !!data.done,
-      });
-      if (!existing) (a.interviews = a.interviews || []).push(iv);
-      if (!iv.done && a.status !== 'decided') a.status = 'interview';
-      saveRender('admissions');
-    },
-  });
-}
-
-/** Record the answer, and the money that comes with it. */
-function decisionDialog(a) {
-  openDialog({
-    title: `Decision · ${appTitle(a)}`,
-    body: `
-      <label class="f"><span>What did they say</span><select name="outcome">
-        ${OUTCOMES.map(([v, l]) => `<option value="${v}"${(a.outcome || '') === v ? ' selected' : ''}>${l}</option>`).join('')}
-      </select></label>
-      <div class="row">
-        <label class="f"><span>Heard on</span><input name="decidedOn" type="date" value="${attr(a.decidedOn || todayISO())}"></label>
-        <label class="f"><span>Aid offered a year (${esc(a.currency || 'USD')})</span><input name="aid" inputmode="decimal" value="${attr(a.aid || '')}"></label>
-      </div>
-      <label class="f"><span>Reply by</span><input name="replyBy" type="date" value="${attr(a.replyBy || '')}"></label>
-      <label class="f"><span>Notes</span><textarea name="dnotes" rows="2" placeholder="Conditions, next steps">${esc(a.dnotes || '')}</textarea></label>`,
-    onSubmit: (data) => {
-      Object.assign(a, {
-        outcome: data.outcome, decidedOn: data.decidedOn || '', aid: data.aid.trim(),
-        replyBy: data.replyBy || '', dnotes: data.dnotes.trim(),
-      });
-      if (data.outcome) a.status = 'decided';
-      saveRender('admissions');
-    },
-  });
-}
-
-/* ---- essays ---- */
-
-const ESSAY_STATES = [['idea', 'Idea'], ['draft', 'Draft'], ['revising', 'Revising'], ['final', 'Final']];
-const essayStateLabel = (v) => (ESSAY_STATES.find((s) => s[0] === v) || ['', v])[1];
-
-function essayDialog(existing, presetAppId) {
-  const e = existing || { id: uid(), title: '', prompt: '', limit: '', unit: 'words', status: 'idea', due: '', noteId: '', created: todayISO() };
-  openDialog({
-    title: existing ? 'Edit essay' : 'New essay',
-    body: `
-      <label class="f"><span>Working title</span><input name="title" value="${attr(e.title)}" placeholder="e.g. Why this programme"></label>
-      <label class="f"><span>The prompt, in their words</span><textarea name="prompt" rows="4" placeholder="Paste the question exactly as asked">${esc(e.prompt || '')}</textarea></label>
-      <div class="row">
-        <label class="f"><span>Limit</span><input name="limit" inputmode="numeric" value="${attr(e.limit || '')}" placeholder="650"></label>
-        <label class="f"><span>Counted in</span><select name="unit">
-          ${['words', 'characters'].map((u) => `<option value="${u}"${e.unit === u ? ' selected' : ''}>${u}</option>`).join('')}
-        </select></label>
-        <label class="f"><span>Status</span><select name="status">
-          ${ESSAY_STATES.map(([v, l]) => `<option value="${v}"${e.status === v ? ' selected' : ''}>${l}</option>`).join('')}
-        </select></label>
-      </div>
-      <label class="f"><span>Want it done by</span><input name="due" type="date" value="${attr(e.due || '')}"></label>`,
-    extraFooter: existing ? `<button type="button" class="btn danger left" id="delessay">Delete</button>` : '',
-    onOpen: (dlg, close) => {
-      const del = $('#delessay', dlg);
-      if (del) del.addEventListener('click', () => {
-        const used = appsUsingEssay(e.id).length;
-        close();
-        confirmDialog('Delete essay', `“${e.title}” goes off the list${used ? ` and off ${used} application${used === 1 ? '' : 's'}` : ''}. The note in the vault stays.`, () => {
-          adm().essays = (adm().essays || []).filter((x) => x.id !== e.id);
-          allApps().forEach((a) => { a.essayIds = (a.essayIds || []).filter((id) => id !== e.id); });
-          saveRender('admissions'); toast('Essay deleted');
-        });
-      });
-    },
-    onSubmit: (data) => {
-      const title = data.title.trim();
-      if (!title) { toast('An essay needs a title.', 'bad'); return false; }
-      Object.assign(e, {
-        title, prompt: data.prompt.trim(), limit: data.limit.trim(), unit: data.unit,
-        status: data.status, due: data.due || '',
-      });
-      if (!existing) {
-        (adm().essays = adm().essays || []).push(e);
-        const a = presetAppId && appById(presetAppId);
-        if (a) (a.essayIds = a.essayIds || []).push(e.id);
-      }
-      saveRender('admissions');
-    },
-  });
-}
-
-/** Essays live in the vault, so drafting happens in the writer you already use. */
-function openEssayNote(e) {
-  let note = e.noteId && noteById(e.noteId);
-  if (!note) {
-    const head = [`# ${e.title}`, '', e.prompt ? `> ${e.prompt}` : '',
-      e.limit ? `> Limit: ${e.limit} ${e.unit || 'words'}` : '', '', ''].filter((l) => l !== null).join('\n');
-    note = createNote({ title: e.title, path: 'Admissions/Essays', body: head });
-    e.noteId = note.id;
-    save('admissions');
-  }
-  go(`shared/notes/${note.id}`);
-}
-
-function attachEssaysDialog(a) {
-  const pool = adm().essays || [];
-  if (!pool.length) { essayDialog(null, a.id); return; }
-  openDialog({
-    title: 'Essays for this application',
-    submitLabel: 'Attach',
-    body: `<p class="mini">One essay can serve several applications — tick it here and it counts on both.</p>
-      <div class="list">${pool.map((e) => `<label class="list-row" style="cursor:pointer">
-        <input type="checkbox" name="e_${attr(e.id)}"${(a.essayIds || []).includes(e.id) ? ' checked' : ''}>
-        <div class="grow"><div class="t">${esc(e.title)}</div>
-          <div class="m">${esc(essayStateLabel(e.status))}${e.limit ? ` · ${esc(e.limit)} ${esc(e.unit || 'words')}` : ''}${appsUsingEssay(e.id).length ? ` · on ${appsUsingEssay(e.id).length} application${appsUsingEssay(e.id).length === 1 ? '' : 's'}` : ''}</div></div>
-      </label>`).join('')}</div>`,
-    extraFooter: `<button type="button" class="btn left" id="newessay">+ Write a new one</button>`,
-    onOpen: (dlg, close) => {
-      $('#newessay', dlg).addEventListener('click', () => { close(); essayDialog(null, a.id); });
-    },
-    onSubmit: (data) => {
-      a.essayIds = pool.filter((e) => data['e_' + e.id]).map((e) => e.id);
-      saveRender('admissions');
-    },
-  });
-}
-
-/* ---- recommenders ---- */
-
-function recDialog(existing) {
-  const p = existing || { id: uid(), name: '', role: '', org: '', email: '', phone: '', known: '', notes: '' };
-  openDialog({
-    title: existing ? 'Edit recommender' : 'New recommender',
-    body: `
-      <label class="f"><span>Name</span><input name="name" value="${attr(p.name)}" placeholder="Who is writing for you"></label>
-      <div class="row">
-        <label class="f"><span>Role</span><input name="role" value="${attr(p.role || '')}" placeholder="Physics teacher"></label>
-        <label class="f"><span>Where</span><input name="org" value="${attr(p.org || '')}" placeholder="SATashkent"></label>
-      </div>
-      <div class="row">
-        <label class="f"><span>Email</span><input name="email" type="email" value="${attr(p.email || '')}"></label>
-        <label class="f"><span>Phone</span><input name="phone" value="${attr(p.phone || '')}"></label>
-      </div>
-      <label class="f"><span>How they know you</span><input name="known" value="${attr(p.known || '')}" placeholder="Taught me two years, supervised the olympiad team"></label>
-      <label class="f"><span>Notes</span><textarea name="notes" rows="3" placeholder="What to remind them of, what they need from you">${esc(p.notes || '')}</textarea></label>`,
-    extraFooter: existing ? `<button type="button" class="btn danger left" id="delrec">Delete</button>` : '',
-    onOpen: (dlg, close) => {
-      const del = $('#delrec', dlg);
-      if (del) del.addEventListener('click', () => {
-        const n = appsForRec(p.id).length;
-        close();
-        confirmDialog('Delete recommender', `${p.name} goes${n ? `, and off ${n} application${n === 1 ? '' : 's'}` : ''}.`, () => {
-          adm().recommenders = (adm().recommenders || []).filter((x) => x.id !== p.id);
-          allApps().forEach((a) => { a.recs = (a.recs || []).filter((r) => r.recId !== p.id); });
-          saveRender('admissions'); toast('Recommender deleted');
-        });
-      });
-    },
-    onSubmit: (data) => {
-      const name = data.name.trim();
-      if (!name) { toast('A recommender needs a name.', 'bad'); return false; }
-      Object.assign(p, {
-        name, role: data.role.trim(), org: data.org.trim(), email: data.email.trim(),
-        phone: data.phone.trim(), known: data.known.trim(), notes: data.notes.trim(),
-      });
-      if (!existing) (adm().recommenders = adm().recommenders || []).push(p);
-      saveRender('admissions');
-    },
-  });
-}
-
-/** Ask someone for this application's letter — and set the date you asked. */
-function askRecDialog(a) {
-  const pool = adm().recommenders || [];
-  if (!pool.length) { recDialog(null); return; }
-  openDialog({
-    title: 'Letters for this application',
-    submitLabel: 'Save',
-    body: `<p class="mini">Tick whoever is writing. Their status starts at <b>asked</b> — move it along on the application page.</p>
-      <div class="list">${pool.map((p) => {
-        const mine = (a.recs || []).find((r) => r.recId === p.id);
-        return `<label class="list-row" style="cursor:pointer">
-          <input type="checkbox" name="r_${attr(p.id)}"${mine ? ' checked' : ''}>
-          <div class="grow"><div class="t">${esc(p.name)}</div>
-            <div class="m">${esc([p.role, p.org].filter(Boolean).join(' · ') || 'recommender')} · writing for ${appsForRec(p.id).length}</div></div>
-          ${mine ? `<span class="pill ${mine.status === 'submitted' ? 'ok' : 'warn'}">${esc((REC_STATES.find((s) => s[0] === mine.status) || ['', mine.status])[1])}</span>` : ''}
-        </label>`;
-      }).join('')}</div>
-      <label class="f" style="margin-top:12px"><span>Letters this application wants</span>
-        <input name="need" inputmode="numeric" value="${attr(a.recsNeeded || '')}" placeholder="2"></label>`,
-    extraFooter: `<button type="button" class="btn left" id="newrec">+ Someone new</button>`,
-    onOpen: (dlg, close) => {
-      $('#newrec', dlg).addEventListener('click', () => { close(); recDialog(null); });
-    },
-    onSubmit: (data) => {
-      const keep = [];
-      pool.forEach((p) => {
-        if (!data['r_' + p.id]) return;
-        keep.push((a.recs || []).find((r) => r.recId === p.id)
-          || { recId: p.id, status: 'asked', asked: todayISO(), due: a.deadline || '' });
-      });
-      a.recs = keep;
-      a.recsNeeded = String(data.need || '').trim();
-      saveRender('admissions');
-    },
-  });
-}
-
-/* ---- tests ---- */
-
-const TEST_NAMES = ['IELTS', 'TOEFL iBT', 'Duolingo English Test', 'SAT', 'ACT', 'SAT Subject', 'GRE', 'GMAT', 'AP', 'IB', 'TOPIK', 'DELF', 'TestDaF'];
-const TEST_STATES = [['planned', 'Planned'], ['registered', 'Registered'], ['taken', 'Taken'], ['scored', 'Scored']];
-
-function testDialog(existing) {
-  const t = existing || { id: uid(), name: '', date: '', status: 'planned', score: '', target: '', subs: [], cost: '', currency: 'USD', expires: '', notes: '' };
-  const subs = (t.subs || []).map((s) => ({ ...s }));
-  const subsHTML = () => subs.map((s, i) => `<div class="row" data-sub="${i}" style="margin-bottom:6px;align-items:center">
-      <input data-slabel="${i}" value="${attr(s.label)}" placeholder="Section" style="flex:2">
-      <input data-sscore="${i}" value="${attr(s.score)}" placeholder="Score" style="flex:1">
-      <button type="button" class="btn danger sm" data-sdel="${i}">✕</button>
-    </div>`).join('') || `<p class="mini">No section scores yet.</p>`;
-  openDialog({
-    title: existing ? 'Edit test' : 'New test',
-    body: `
-      <div class="row">
-        <label class="f"><span>Test</span><input name="name" value="${attr(t.name)}" list="testnames" placeholder="IELTS"></label>
-        <label class="f"><span>Date</span><input name="date" type="date" value="${attr(t.date || '')}"></label>
-      </div>
-      <datalist id="testnames">${TEST_NAMES.map((n) => `<option value="${n}">`).join('')}</datalist>
-      <div class="row">
-        <label class="f"><span>Status</span><select name="status">
-          ${TEST_STATES.map(([v, l]) => `<option value="${v}"${t.status === v ? ' selected' : ''}>${l}</option>`).join('')}
-        </select></label>
-        <label class="f"><span>Score</span><input name="score" value="${attr(t.score || '')}" placeholder="7.5"></label>
-        <label class="f"><span>Target</span><input name="target" value="${attr(t.target || '')}" placeholder="7.0"></label>
-      </div>
-      <div class="row">
-        <label class="f"><span>Fee</span><input name="cost" inputmode="decimal" value="${attr(t.cost || '')}"></label>
-        <label class="f"><span>Currency</span><select name="currency">${curOptions(t.currency || 'USD')}</select></label>
-        <label class="f"><span>Valid until</span><input name="expires" type="date" value="${attr(t.expires || '')}"></label>
-      </div>
-      <div class="spread" style="margin:14px 0 6px"><span class="mini b">SECTION SCORES</span><button type="button" class="btn sm" id="addsub">+ Section</button></div>
-      <div id="sublist">${subsHTML()}</div>
-      <label class="f" style="margin-top:12px"><span>Notes</span><textarea name="notes" rows="2" placeholder="Centre, which universities the report went to">${esc(t.notes || '')}</textarea></label>`,
-    extraFooter: existing ? `<button type="button" class="btn danger left" id="deltest">Delete</button>` : '',
-    onOpen: (dlg, close) => {
-      const list = $('#sublist', dlg);
-      const redraw = () => { list.innerHTML = subsHTML(); };
-      $('#addsub', dlg).addEventListener('click', () => { subs.push({ label: '', score: '' }); redraw(); });
-      list.addEventListener('input', (e) => {
-        const el = e.target;
-        if (el.dataset.slabel != null) subs[+el.dataset.slabel].label = el.value;
-        if (el.dataset.sscore != null) subs[+el.dataset.sscore].score = el.value;
-      });
-      list.addEventListener('click', (e) => {
-        const b = e.target.closest('[data-sdel]');
-        if (b) { subs.splice(+b.dataset.sdel, 1); redraw(); }
-      });
-      const del = $('#deltest', dlg);
-      if (del) del.addEventListener('click', () => {
-        adm().tests = (adm().tests || []).filter((x) => x.id !== t.id);
-        close(); saveRender('admissions'); toast('Test deleted');
-      });
-    },
-    onSubmit: (data) => {
-      const name = data.name.trim();
-      if (!name) { toast('Which test is it?', 'bad'); return false; }
-      Object.assign(t, {
-        name, date: data.date || '', status: data.status, score: data.score.trim(),
-        target: data.target.trim(), cost: data.cost.trim(), currency: data.currency,
-        expires: data.expires || '', notes: data.notes.trim(),
-        subs: subs.filter((s) => s.label.trim() || String(s.score).trim())
-          .map((s) => ({ label: s.label.trim(), score: String(s.score).trim() })),
-      });
-      if (!existing) (adm().tests = adm().tests || []).push(t);
-      saveRender('admissions');
-    },
-  });
-}
-
-/* ---- shared bits of markup ---- */
-
-const OUTCOME_TONE = { accepted: 'ok', waitlisted: 'warn', deferred: 'warn', rejected: 'bad', withdrawn: '' };
-
-function appPills(a) {
-  const rp = reqProgress(a);
-  return [
-    `<span class="pill${a.kind === 'scholarship' ? ' accent' : ''}">${a.kind === 'scholarship' ? 'scholarship' : 'university'}</span>`,
-    a.round ? `<span class="pill">${esc((ROUNDS.find((x) => x[0] === a.round) || ['', a.round])[1])}</span>` : '',
-    a.deadline ? `<span class="pill ${dueClass(a.deadline)}">${esc(fmtDay(a.deadline))}</span>` : '<span class="pill warn">no deadline</span>',
-    rp.total ? `<span class="pill${rp.done === rp.total ? ' ok' : ''}">${rp.done}/${rp.total} ready</span>` : '',
-    a.outcome ? `<span class="pill ${OUTCOME_TONE[a.outcome] || ''}">${esc(outcomeLabel(a.outcome))}</span>` : '',
-  ].filter(Boolean).join('');
-}
-
-function appRow(a) {
-  const rp = reqProgress(a);
-  return `<div class="list-row click" data-app="${attr(a.id)}">
-    <div class="grow">
-      <div class="t">${esc(appTitle(a))}</div>
-      <div class="m">${[a.country, a.level, stageLabel(a.status)].filter(Boolean).map(esc).join(' · ')}</div>
-    </div>
-    <div class="admbarwrap">${rp.total ? `<div class="bar ${rp.pct === 100 ? 'ok' : rp.pct >= 50 ? '' : 'warn'}"><i style="width:${rp.pct}%"></i></div>` : ''}</div>
-    <div class="wrap">${appPills(a)}</div>
-  </div>`;
-}
-
-/* ---- the pages ---- */
-
-function renderAdmOverview(view) {
-  const apps = allApps();
-  const open = openApps();
-  const alerts = admissionAlerts();
-  const dates = admissionDates().filter((d) => daysUntil(d.date) >= 0);
-  const next = dates[0] || null;
-  const submitted = apps.filter((a) => ['submitted', 'interview', 'decided'].includes(a.status));
-  const offers = apps.filter((a) => a.outcome === 'accepted');
-  const reqAll = apps.filter((a) => a.status !== 'decided').flatMap((a) => a.reqs || []);
-  const reqDone = reqAll.filter((r) => r.done).length;
-  const lettersWanted = apps.filter((a) => a.status !== 'decided').flatMap((a) => a.recs || []);
-  const lettersIn = lettersWanted.filter((r) => r.status === 'submitted').length;
-  const essays = adm().essays || [];
-  const essaysLeft = essays.filter((e) => e.status !== 'final');
-
-  const lines = [];
-  if (next) lines.push({ kind: dueClass(next.date) === 'bad' ? 'bad' : dueClass(next.date) === 'warn' ? 'warn' : '', html: `${esc(next.label)} <b>${esc(relDays(next.date))}</b>` });
-  if (alerts.some((x) => x.kind === 'bad')) lines.push({ kind: 'bad', html: `<b>${alerts.filter((x) => x.kind === 'bad').length}</b> past a deadline` });
-  if (essaysLeft.length) lines.push({ kind: '', html: `<b>${essaysLeft.length}</b> ${essaysLeft.length === 1 ? 'essay' : 'essays'} unfinished` });
-  const lettersOut = lettersWanted.length - lettersIn;
-  if (lettersOut > 0) lines.push({ kind: '', html: `<b>${lettersOut}</b> letter${lettersOut === 1 ? '' : 's'} outstanding` });
-  if (!lines.length) lines.push({ kind: 'good', html: apps.length ? 'Nothing overdue. Keep drafting.' : 'Nothing on the list yet — add the first university.' });
-
-  topbar('Admissions', {
-    actions: `<button class="btn" id="newessay2">+ Essay</button><button class="btn primary" id="newapp">+ Application</button>`,
-  });
-
-  const stageCols = STAGES.map(([id, label]) => {
-    const list = apps.filter((a) => (a.status || 'researching') === id)
-      .sort((x, y) => (x.deadline || '9999').localeCompare(y.deadline || '9999'));
-    return `<div class="pipecol">
-      <header><h4>${esc(label)}</h4><span class="mini num">${list.length}</span></header>
-      ${list.map((a) => `<button class="pipecard" data-app="${attr(a.id)}">
-        <span class="pt">${esc(a.school)}</span>
-        <span class="mini">${esc(a.program || a.level || '')}</span>
-        <span class="wrap">${a.deadline ? `<span class="pill ${dueClass(a.deadline)}">${esc(fmtDay(a.deadline))}</span>` : ''}
-        ${a.outcome ? `<span class="pill ${OUTCOME_TONE[a.outcome] || ''}">${esc(outcomeLabel(a.outcome))}</span>` : ''}</span>
-      </button>`).join('') || '<div class="mini mut" style="padding:8px 2px">—</div>'}
-    </div>`;
-  }).join('');
-
-  view.innerHTML = `
-    ${hero('Admissions', apps.length ? `${apps.length} on the list · ${submitted.length} submitted` : 'Universities and scholarships', lines,
-      `${actBtn('+ Application', 'newapp')}${actBtn('+ Essay', 'newessay')}${actBtn('Add a test score', 'newtest')}`)}
-
-    <div class="stats">
-      ${statBox(open.length, 'still open', submitted.length ? `<div class="delta up">${submitted.length} submitted</div>` : '')}
-      ${statBox(next ? daysUntil(next.date) : '—', 'days to the next date', next ? `<div class="delta flat">${esc(next.label.split(' — ')[0])}</div>` : '')}
-      ${statBox(reqAll.length ? `${Math.round((reqDone / reqAll.length) * 100)}%` : '—', 'of the paperwork done',
-        reqAll.length ? `<div class="delta flat">${reqDone}/${reqAll.length} items</div>` : '')}
-      ${statBox(`${lettersIn}/${lettersWanted.length || 0}`, 'letters in', offers.length ? `<div class="delta up">${offers.length} offer${offers.length === 1 ? '' : 's'}</div>` : '')}
-    </div>
-
-    ${alerts.length ? panel('Wants attention', `<div class="list">${alerts.slice(0, 12).map((x) => `
-      <div class="list-row click" data-app="${attr(x.appId)}">
-        <div class="grow"><div class="t">${esc(x.text)}</div></div>
-        <span class="pill ${x.kind}">${x.kind === 'bad' ? 'late' : x.kind === 'warn' ? 'soon' : 'note'}</span></div>`).join('')}</div>`, { flush: true }) : ''}
-
-    ${apps.length ? panel('The pipeline', `<div class="pipe">${stageCols}</div>`, { sub: 'Every application, by how far along it is' })
-      : emptyState('No applications yet', 'Put the first university or scholarship on the list — the checklist comes with it.', actBtn('Add an application', 'newapp'))}
-
-    <div class="grid g-side">
-      ${panel('What is coming', dates.length ? `<div class="list">${dates.slice(0, 10).map((d) => `
-        <div class="list-row click" data-app="${attr(d.appId)}">
-          <div class="grow"><div class="t">${esc(d.label)}</div>
-            <div class="m">${esc(d.kind)}${d.time ? ' · ' + esc(d.time) : ''}</div></div>
-          <span class="pill ${dueClass(d.date)}">${esc(fmtDay(d.date))}</span></div>`).join('')}</div>`
-        : emptyState('No dates ahead', 'Deadlines, decision dates and interviews all show up here.'), { flush: true })}
-
-      ${panel('Essays', essays.length ? `<div class="list">${essays.slice(0, 8).map((e) => `
-        <div class="list-row click" data-essay="${attr(e.id)}">
-          <div class="grow"><div class="t">${esc(e.title)}</div>
-            <div class="m">${appsUsingEssay(e.id).length} application${appsUsingEssay(e.id).length === 1 ? '' : 's'}${e.limit ? ` · ${esc(e.limit)} ${esc(e.unit || 'words')}` : ''}</div></div>
-          <span class="pill ${e.status === 'final' ? 'ok' : e.status === 'idea' ? 'warn' : ''}">${esc(essayStateLabel(e.status))}</span></div>`).join('')}</div>`
-        : emptyState('No essays yet', 'Every prompt you have to answer, in one place.', actBtn('Add an essay', 'newessay')),
-        { flush: true, actions: `<button class="btn sm ghost" data-goto="adm/essays">All essays</button>` })}
-    </div>
-
-    ${panel('Money', `<div class="list">
-      ${Object.keys(feesDue()).length
-        ? Object.entries(feesDue()).map(([cur, v], i, all) => `<div class="list-row"><div class="grow">Application fees still to pay${all.length > 1 ? ` · ${esc(cur)}` : ''}</div><span class="num">${esc(money(v, cur))}</span></div>`).join('')
-        : '<div class="list-row"><div class="grow">Application fees still to pay</div><span class="num">nothing outstanding</span></div>'}
-      ${offers.map((a) => `<div class="list-row click" data-app="${attr(a.id)}">
-        <div class="grow"><div class="t">${esc(appTitle(a))}</div><div class="m">cost ${esc(money(Number(a.cost) || 0, a.currency || 'USD'))} · aid ${esc(money(Number(a.aid) || 0, a.currency || 'USD'))}</div></div>
-        <span class="num">${esc(money(netCost(a), a.currency || 'USD'))} a year</span></div>`).join('')}
-      ${offers.length ? '' : '<div class="list-row"><div class="grow mut">Net cost of each offer lands here once a decision is in.</div></div>'}
-    </div>`, { flush: true, sub: 'Fees are counted in the currency each application is set to' })}`;
-
-  $('#newapp').addEventListener('click', () => appDialog(null));
-  $('#newessay2').addEventListener('click', () => essayDialog(null));
-  const acts = { newapp: () => appDialog(null), newessay: () => essayDialog(null), newtest: () => testDialog(null) };
-  on('[data-act]', 'click', (e, el) => { const fn = acts[el.dataset.act]; if (fn) fn(); }, view);
-  on('[data-app]', 'click', (e, el) => go(`adm/applications/${el.dataset.app}`), view);
-  on('[data-essay]', 'click', (e, el) => { const x = essayById(el.dataset.essay); if (x) essayDialog(x); }, view);
-  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
-}
-PAGES['adm/overview'] = renderAdmOverview;
-
-function renderApplications(view, r) {
-  if (r.param) {
-    const a = appById(r.param);
-    if (a) return renderAppPage(view, a);
-    go('adm/applications');
-    return;
-  }
-  const apps = [...allApps()].sort((x, y) => (x.deadline || '9999').localeCompare(y.deadline || '9999'));
-  const decided = apps.filter((a) => a.status === 'decided');
-  const live = apps.filter((a) => a.status !== 'decided');
-  const unis = live.filter((a) => a.kind !== 'scholarship');
-  const schols = live.filter((a) => a.kind === 'scholarship');
-
-  topbar('Applications', { actions: `<button class="btn primary" id="newapp">+ Application</button>` });
-
-  const section = (title, list, hint) => list.length
-    ? panel(`${title} · ${list.length}`, `<div class="list">${list.map(appRow).join('')}</div>`, { flush: true })
-    : panel(title, `<p class="mini" style="margin:0">${esc(hint)}</p>`);
-
-  view.innerHTML = apps.length ? `
-    <div class="stats">
-      ${statBox(live.length, 'open applications')}
-      ${statBox(unis.length, 'universities')}
-      ${statBox(schols.length, 'scholarships')}
-      ${statBox(decided.length, 'decided', decided.filter((a) => a.outcome === 'accepted').length ? `<div class="delta up">${decided.filter((a) => a.outcome === 'accepted').length} accepted</div>` : '')}
-    </div>
-    ${section('Universities', unis, 'No university applications open.')}
-    ${section('Scholarships', schols, 'No scholarship applications open — most universities have their own, and they close earlier than the course deadline.')}
-    ${decided.length ? panel(`Decided · ${decided.length}`, `<div class="list">${decided.map(appRow).join('')}</div>`, { flush: true }) : ''}`
-    : emptyState('No applications yet', 'One row per university or scholarship, each with its own checklist, essays, letters and dates.', actBtn('Add the first one', 'newapp'));
-
-  $('#newapp').addEventListener('click', () => appDialog(null));
-  on('[data-act=newapp]', 'click', () => appDialog(null), view);
-  on('[data-app]', 'click', (e, el) => go(`adm/applications/${el.dataset.app}`), view);
-}
-PAGES['adm/applications'] = renderApplications;
-
-function renderAppPage(view, a) {
-  const rp = reqProgress(a);
-  const rc = recProgress(a);
-  const essays = (a.essayIds || []).map(essayById).filter(Boolean);
-  const tasks = DB.tasks.filter((t) => t.app === a.id);
-  const reqs = [...(a.reqs || [])].sort((x, y) => Number(x.done) - Number(y.done));
-  const ivs = [...(a.interviews || [])].sort((x, y) => (x.date || '').localeCompare(y.date || ''));
-
-  topbar(a.school, {
-    crumb: `<a href="#adm/applications">Applications</a> · ${esc(a.kind === 'scholarship' ? 'Scholarship' : 'University')}`,
-    actions: `${a.portal ? `<a class="btn" href="${attr(a.portal)}" target="_blank" rel="noopener">Portal ↗</a>` : ''}
-      <button class="btn" id="decide">Record decision</button><button class="btn primary" id="editapp">Edit</button>`,
-  });
-
-  const lines = [];
-  if (a.deadline) lines.push({ kind: dueClass(a.deadline), html: `deadline <b>${esc(fmtDate(a.deadline))}</b> · ${esc(relDays(a.deadline))}` });
-  if (a.decisionDate) lines.push({ kind: '', html: `decision <b>${esc(fmtDate(a.decisionDate))}</b>` });
-  if (a.replyBy) lines.push({ kind: dueClass(a.replyBy), html: `reply by <b>${esc(fmtDate(a.replyBy))}</b>` });
-  if (a.outcome) lines.push({ kind: a.outcome === 'accepted' ? 'good' : a.outcome === 'rejected' ? 'bad' : 'warn', html: `<b>${esc(outcomeLabel(a.outcome))}</b>` });
-  if (!lines.length) lines.push({ kind: '', html: 'No dates set yet — add the deadline so it can chase you.' });
-
-  const stepper = `<div class="stepper">${STAGES.map(([id, label], i) => {
-    const at = STAGES.findIndex((s) => s[0] === (a.status || 'researching'));
-    return `<button class="step${i <= at ? ' on' : ''}${i === at ? ' now' : ''}" data-stage="${id}">
-      <span class="sn">${i + 1}</span>${esc(label)}</button>`;
-  }).join('')}</div>`;
-
-  view.innerHTML = `
-    ${hero(appTitle(a), [a.level, a.country, (ROUNDS.find((x) => x[0] === a.round) || ['', ''])[1], (FITS.find((f) => f[0] === a.fit) || ['', ''])[1]].filter(Boolean).join(' · ') || 'Application', lines)}
-
-    ${panel('Where it stands', stepper, { sub: 'Click a stage to move it' })}
-
-    <div class="stats">
-      ${statBox(`${rp.done}/${rp.total}`, 'requirements done', rp.total ? `<div class="delta ${rp.pct === 100 ? 'up' : 'flat'}">${rp.pct}%</div>` : '')}
-      ${statBox(`${rc.done}/${rc.total || (a.recsNeeded || 0)}`, 'letters in')}
-      ${statBox(`${essays.filter((e) => e.status === 'final').length}/${essays.length}`, 'essays final')}
-      ${statBox(esc(money(netCost(a), a.currency || 'USD')), 'net cost a year',
-        a.aid ? `<div class="delta up">${esc(money(Number(a.aid) || 0, a.currency || 'USD'))} aid</div>` : '')}
-    </div>
-
-    <div class="grid g-side">
-      ${panel('Checklist', reqs.length ? `<div class="list">${reqs.map((q) => `
-        <div class="list-row">
-          <button class="tick${q.done ? ' on' : ''}" data-req="${attr(q.id)}" title="${q.done ? 'Undo' : 'Mark done'}">${q.done ? '✓' : ''}</button>
-          <div class="grow click" data-editreq="${attr(q.id)}"><div class="t${q.done ? ' done-text' : ''}">${esc(q.text)}</div>
-            ${q.note ? `<div class="m">${esc(q.note)}</div>` : ''}</div>
-          ${q.due ? `<span class="pill ${q.done ? '' : dueClass(q.due)}">${esc(fmtDay(q.due))}</span>` : ''}
-        </div>`).join('')}</div>`
-        : emptyState('Nothing on the checklist', 'Add what they ask for, or paste their list straight in.', `${actBtn('+ Requirement', 'addreq')}${actBtn('Paste a list', 'bulkreq')}`),
-        { flush: reqs.length > 0, actions: `<button class="btn sm" data-act="addreq">+ Item</button><button class="btn sm ghost" data-act="bulkreq">Paste list</button>` })}
-
-      ${panel('Letters', (a.recs || []).length ? `<div class="list">${(a.recs || []).map((r) => {
-        const p = recById(r.recId) || { name: 'Someone who is gone' };
-        const st = REC_STATES.find((s) => s[0] === r.status) || ['asked', 'Asked'];
-        return `<div class="list-row">
-          <div class="grow click" data-rec="${attr(r.recId)}"><div class="t">${esc(p.name)}</div>
-            <div class="m">${esc([p.role, p.org].filter(Boolean).join(' · '))}${r.asked ? ` · asked ${esc(fmtDate(r.asked))}` : ''}</div></div>
-          <button class="btn sm ${r.status === 'submitted' ? 'primary' : ''}" data-recnext="${attr(r.recId)}" title="Move it along">${esc(st[1])}</button>
-        </div>`;
-      }).join('')}</div>` : emptyState('No letters lined up', 'Ask early — a good letter takes a teacher two weeks.', actBtn('Ask someone', 'askrec')),
-        { flush: (a.recs || []).length > 0, actions: `<button class="btn sm" data-act="askrec">Manage</button>` })}
-    </div>
-
-    <div class="grid g-side">
-      ${panel('Essays', essays.length ? `<div class="list">${essays.map((e) => `
-        <div class="list-row">
-          <div class="grow click" data-essay="${attr(e.id)}"><div class="t">${esc(e.title)}</div>
-            <div class="m">${e.prompt ? esc(e.prompt.slice(0, 90)) + (e.prompt.length > 90 ? '…' : '') : 'no prompt saved'}</div></div>
-          <span class="pill ${e.status === 'final' ? 'ok' : e.status === 'idea' ? 'warn' : ''}">${esc(essayStateLabel(e.status))}</span>
-          <button class="btn sm" data-write="${attr(e.id)}">Write</button>
-        </div>`).join('')}</div>` : emptyState('No essays attached', 'Attach one you are already writing, or start a new prompt.', actBtn('Attach an essay', 'essays')),
-        { flush: essays.length > 0, actions: `<button class="btn sm" data-act="essays">Attach</button>` })}
-
-      ${panel('Interviews', ivs.length ? `<div class="list">${ivs.map((iv) => `
-        <div class="list-row click" data-iv="${attr(iv.id)}">
-          <div class="grow"><div class="t${iv.done ? ' done-text' : ''}">${esc(titleCase(iv.mode || 'interview'))}${iv.who ? ` · ${esc(iv.who)}` : ''}</div>
-            <div class="m">${esc(fmtDate(iv.date))}${iv.time ? ' · ' + esc(iv.time) : ''}</div></div>
-          <span class="pill ${iv.done ? 'ok' : dueClass(iv.date)}">${iv.done ? 'done' : esc(relDays(iv.date))}</span></div>`).join('')}</div>`
-        : emptyState('No interview yet', 'Put it here when they offer one — it lands on the calendar too.', actBtn('Add an interview', 'addiv')),
-        { flush: ivs.length > 0, actions: `<button class="btn sm" data-act="addiv">+ Interview</button>` })}
-    </div>
-
-    ${panel('Tasks for this application', tasks.length ? `<div class="list">${tasks.map((t) => `
-      <div class="list-row click" data-task="${attr(t.id)}">
-        <div class="grow"><div class="t${t.status === 'done' ? ' done-text' : ''}">${esc(t.title)}</div>
-          <div class="m">${esc((STATUSES.find((s) => s[0] === (t.status || 'todo')) || ['', ''])[1])}</div></div>
-        ${t.due ? `<span class="pill ${dueClass(t.due)}">${esc(fmtDay(t.due))}</span>` : ''}</div>`).join('')}</div>`
-      : `<p class="mini" style="margin:0">Nothing queued — anything fiddly that is not a checklist tick goes here.</p>`,
-      { flush: tasks.length > 0, actions: `<button class="btn sm" data-act="addtask">+ Task</button>` })}
-
-    ${panel('Money and notes', `<div class="list">
-      <div class="list-row"><div class="grow">Application fee</div>
-        <span class="num">${a.feeWaived ? 'waived' : esc(money(Number(a.fee) || 0, a.currency || 'USD'))}</span></div>
-      <div class="list-row"><div class="grow">Cost a year</div><span class="num">${esc(money(Number(a.cost) || 0, a.currency || 'USD'))}</span></div>
-      <div class="list-row"><div class="grow">Aid a year</div><span class="num">${esc(money(Number(a.aid) || 0, a.currency || 'USD'))}</span></div>
-      <div class="list-row"><div class="grow b">You pay a year</div><span class="num b">${esc(money(netCost(a), a.currency || 'USD'))}</span></div>
-    </div>
-    ${a.notes ? `<p class="mini" style="padding:12px 14px 0;white-space:pre-wrap">${esc(a.notes)}</p>` : ''}
-    ${a.dnotes ? `<p class="mini" style="padding:8px 14px 0;white-space:pre-wrap"><b>Decision:</b> ${esc(a.dnotes)}</p>` : ''}`, { flush: true })}`;
-
-  $('#editapp').addEventListener('click', () => appDialog(a));
-  $('#decide').addEventListener('click', () => decisionDialog(a));
-
-  const acts = {
-    addreq: () => reqDialog(a, null),
-    bulkreq: () => bulkReqDialog(a),
-    askrec: () => askRecDialog(a),
-    essays: () => attachEssaysDialog(a),
-    addiv: () => interviewDialog(a, null),
-    addtask: () => taskDialog(null, 'adm', '', a.id),
-  };
-  on('[data-act]', 'click', (e, el) => { const fn = acts[el.dataset.act]; if (fn) fn(); }, view);
-  on('[data-stage]', 'click', (e, el) => {
-    a.status = el.dataset.stage;
-    saveRender('admissions');
-    if (a.status === 'decided' && !a.outcome) decisionDialog(a);
-  }, view);
-  on('[data-req]', 'click', (e, el) => {
-    const q = (a.reqs || []).find((x) => x.id === el.dataset.req);
-    if (q) { q.done = !q.done; saveRender('admissions'); }
-  }, view);
-  on('[data-editreq]', 'click', (e, el) => {
-    const q = (a.reqs || []).find((x) => x.id === el.dataset.editreq);
-    if (q) reqDialog(a, q);
-  }, view);
-  on('[data-recnext]', 'click', (e, el) => {
-    const r = (a.recs || []).find((x) => x.recId === el.dataset.recnext);
-    if (!r) return;
-    const order = REC_STATES.map((s) => s[0]);
-    r.status = order[(order.indexOf(r.status) + 1) % order.length];
-    if (r.status === 'submitted') r.submitted = todayISO();
-    saveRender('admissions');
-  }, view);
-  on('[data-rec]', 'click', (e, el) => { const p = recById(el.dataset.rec); if (p) recDialog(p); }, view);
-  on('[data-essay]', 'click', (e, el) => { const x = essayById(el.dataset.essay); if (x) essayDialog(x); }, view);
-  on('[data-write]', 'click', (e, el) => { const x = essayById(el.dataset.write); if (x) openEssayNote(x); }, view);
-  on('[data-iv]', 'click', (e, el) => {
-    const iv = (a.interviews || []).find((x) => x.id === el.dataset.iv);
-    if (iv) interviewDialog(a, iv);
-  }, view);
-  on('[data-task]', 'click', (e, el) => { const t = taskById(el.dataset.task); if (t) taskDialog(t, 'adm'); }, view);
-}
-
-function renderEssays(view) {
-  const essays = adm().essays || [];
-  const byState = (s) => essays.filter((e) => e.status === s);
-  const soonest = (e) => {
-    const ds = appsUsingEssay(e.id).map((a) => a.deadline).filter(Boolean).sort();
-    return ds[0] || e.due || '';
-  };
-
-  topbar('Essays', { actions: `<button class="btn primary" id="newessay">+ New essay</button>` });
-
-  const card = (e) => {
-    const apps = appsUsingEssay(e.id);
-    const due = soonest(e);
-    return `<section class="goal" data-essaycard="${attr(e.id)}">
-      <div class="spread">
-        <div class="grow">
-          <div class="gtitle">${esc(e.title)}
-            <span class="pill ${e.status === 'final' ? 'ok' : e.status === 'idea' ? 'warn' : ''}">${esc(essayStateLabel(e.status))}</span>
-            ${due ? `<span class="pill ${dueClass(due)}">${esc(fmtDay(due))}</span>` : ''}</div>
-          ${e.prompt ? `<div class="mini mut" style="white-space:pre-wrap">${esc(e.prompt)}</div>` : '<div class="mini mut">No prompt saved — paste theirs in so you answer the question they asked.</div>'}
-        </div>
-        ${e.limit ? `<div class="gpct num">${esc(e.limit)}<span class="mini"> ${esc((e.unit || 'words').slice(0, 5))}</span></div>` : ''}
-      </div>
-      <div class="kmeta" style="margin-top:9px">
-        ${apps.length ? apps.map((a) => `<button class="pill accent" data-app="${attr(a.id)}">${esc(a.school)}</button>`).join('')
-          : '<span class="pill warn">not attached to anything</span>'}
-      </div>
-      <div class="wrap" style="margin-top:10px">
-        <button class="btn sm" data-write="${attr(e.id)}">${e.noteId ? 'Open draft' : 'Start drafting'}</button>
-        <button class="btn ghost sm" data-essay="${attr(e.id)}">Edit</button>
-      </div>
-    </section>`;
-  };
-
-  view.innerHTML = essays.length ? `
-    <div class="stats">
-      ${statBox(essays.length, 'essays in play', byState('final').length ? `<div class="delta up">${byState('final').length} final</div>` : '')}
-      ${statBox(byState('idea').length, 'not started')}
-      ${statBox(byState('draft').length + byState('revising').length, 'in the middle')}
-      ${statBox(essays.filter((e) => !appsUsingEssay(e.id).length).length, 'attached to nothing')}
-    </div>
-    ${ESSAY_STATES.map(([s, label]) => {
-      const list = byState(s).sort((x, y) => (soonest(x) || '9999').localeCompare(soonest(y) || '9999'));
-      return list.length ? panel(`${label} · ${list.length}`, `<div class="goals">${list.map(card).join('')}</div>`) : '';
-    }).join('')}`
-    : emptyState('No essays yet', 'Every prompt, its word limit and which applications want it — then draft in the vault.', actBtn('Add the first prompt', 'newessay'));
-
-  $('#newessay').addEventListener('click', () => essayDialog(null));
-  on('[data-act=newessay]', 'click', () => essayDialog(null), view);
-  on('[data-write]', 'click', (e, el) => { const x = essayById(el.dataset.write); if (x) openEssayNote(x); }, view);
-  on('[data-essay]', 'click', (e, el) => { const x = essayById(el.dataset.essay); if (x) essayDialog(x); }, view);
-  on('[data-app]', 'click', (e, el) => go(`adm/applications/${el.dataset.app}`), view);
-}
-PAGES['adm/essays'] = renderEssays;
-
-function renderRecommenders(view) {
-  const people = adm().recommenders || [];
-  const all = allApps().flatMap((a) => (a.recs || []).map((r) => ({ ...r, app: a })));
-  const waiting = all.filter((r) => r.status !== 'submitted');
-
-  topbar('Recommenders', { actions: `<button class="btn primary" id="newrec">+ New recommender</button>` });
-
-  view.innerHTML = people.length ? `
-    <div class="stats">
-      ${statBox(people.length, 'people asked')}
-      ${statBox(all.length, 'letters wanted')}
-      ${statBox(all.filter((r) => r.status === 'submitted').length, 'letters in')}
-      ${statBox(waiting.length, 'still waiting', waiting.length ? `<div class="delta flat">nudge them</div>` : '')}
-    </div>
-    <div class="grid g2">${people.map((p) => {
-      const mine = appsForRec(p.id);
-      return panel(p.name, `
-        <div class="mini mut">${esc([p.role, p.org].filter(Boolean).join(' · ') || 'recommender')}</div>
-        ${p.known ? `<p class="mini" style="margin:8px 0 0">${esc(p.known)}</p>` : ''}
-        <div class="wrap" style="margin-top:10px">
-          ${p.email ? `<a class="pill" href="mailto:${attr(p.email)}">${esc(p.email)}</a>` : ''}
-          ${p.phone ? `<a class="pill" href="tel:${attr(p.phone)}">${esc(p.phone)}</a>` : ''}
-        </div>
-        ${mine.length ? `<div class="list" style="margin-top:10px">${mine.map((a) => {
-          const r = (a.recs || []).find((x) => x.recId === p.id) || {};
-          const st = REC_STATES.find((s) => s[0] === r.status) || ['asked', 'Asked'];
-          return `<div class="list-row click" data-app="${attr(a.id)}">
-            <div class="grow"><div class="t">${esc(appTitle(a))}</div>
-              <div class="m">${a.deadline ? esc(fmtDay(a.deadline)) : 'no deadline'}${r.asked ? ` · asked ${esc(fmtDate(r.asked))}` : ''}</div></div>
-            <span class="pill ${r.status === 'submitted' ? 'ok' : 'warn'}">${esc(st[1])}</span></div>`;
-        }).join('')}</div>` : '<p class="mini" style="margin:10px 0 0">Not writing for anything yet — add them from an application.</p>'}
-        ${p.notes ? `<p class="mini mut" style="margin:10px 0 0;white-space:pre-wrap">${esc(p.notes)}</p>` : ''}
-        <div class="wrap" style="margin-top:10px"><button class="btn ghost sm" data-rec="${attr(p.id)}">Edit</button></div>`,
-        { sub: `${mine.length} application${mine.length === 1 ? '' : 's'}` });
-    }).join('')}</div>`
-    : emptyState('Nobody asked yet', 'Keep the people writing for you here — who they are, how to reach them, and which letters are still out.', actBtn('Add a recommender', 'newrec'));
-
-  $('#newrec').addEventListener('click', () => recDialog(null));
-  on('[data-act=newrec]', 'click', () => recDialog(null), view);
-  on('[data-rec]', 'click', (e, el) => { const p = recById(el.dataset.rec); if (p) recDialog(p); }, view);
-  on('[data-app]', 'click', (e, el) => go(`adm/applications/${el.dataset.app}`), view);
-}
-PAGES['adm/recommenders'] = renderRecommenders;
-
-function renderTests(view) {
-  const tests = [...(adm().tests || [])].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-  const scored = tests.filter((t) => t.score);
-  const ahead = tests.filter((t) => t.date && daysUntil(t.date) >= 0 && !t.score);
-  const nextT = ahead.sort((a, b) => a.date.localeCompare(b.date))[0];
-  const expiring = scored.filter((t) => t.expires && daysUntil(t.expires) < 365);
-
-  topbar('Tests & scores', { actions: `<button class="btn primary" id="newtest">+ Add a test</button>` });
-
-  view.innerHTML = tests.length ? `
-    <div class="stats">
-      ${statBox(scored.length, 'scores on file')}
-      ${statBox(ahead.length, 'booked or planned', nextT ? `<div class="delta flat">next ${esc(fmtDay(nextT.date))}</div>` : '')}
-      ${statBox(nextT ? daysUntil(nextT.date) : '—', 'days to the next sitting', nextT ? `<div class="delta flat">${esc(nextT.name)}</div>` : '')}
-      ${statBox(expiring.length, 'expiring within a year')}
-    </div>
-
-    ${panel('Scores', scored.length ? `<div class="list">${scored.map((t) => `
-      <div class="list-row click" data-test="${attr(t.id)}">
-        <div class="grow"><div class="t">${esc(t.name)}${t.target && Number(t.score) >= Number(t.target) ? ' <span class="pill ok">target met</span>' : ''}</div>
-          <div class="m">${esc(fmtDate(t.date))}${(t.subs || []).length ? ' · ' + (t.subs || []).map((s) => `${esc(s.label)} ${esc(s.score)}`).join(' · ') : ''}${t.expires ? ` · valid to ${esc(fmtDate(t.expires))}` : ''}</div></div>
-        <span class="num b">${esc(t.score)}</span></div>`).join('')}</div>`
-      : `<p class="mini" style="margin:0">No scores yet — add one as soon as it comes back.</p>`, { flush: scored.length > 0 })}
-
-    ${ahead.length ? panel('Coming up', `<div class="list">${ahead.map((t) => `
-      <div class="list-row click" data-test="${attr(t.id)}">
-        <div class="grow"><div class="t">${esc(t.name)}</div>
-          <div class="m">${esc((TEST_STATES.find((s) => s[0] === t.status) || ['', t.status])[1])}${t.target ? ` · aiming for ${esc(t.target)}` : ''}${t.cost ? ` · ${esc(money(Number(t.cost) || 0, t.currency || 'USD'))}` : ''}</div></div>
-        <span class="pill ${dueClass(t.date)}">${esc(fmtDay(t.date))}</span></div>`).join('')}</div>`, { flush: true }) : ''}
-
-    ${expiring.length ? panel('Watch the expiry', `<div class="list">${expiring.map((t) => `
-      <div class="list-row click" data-test="${attr(t.id)}">
-        <div class="grow"><div class="t">${esc(t.name)} · ${esc(t.score)}</div>
-          <div class="m">most universities want a score under two years old</div></div>
-        <span class="pill ${dueClass(t.expires)}">${esc(fmtDate(t.expires))}</span></div>`).join('')}</div>`, { flush: true }) : ''}`
-    : emptyState('No tests yet', 'IELTS, SAT, whatever they ask for — the date, the score, and when it stops counting.', actBtn('Add a test', 'newtest'));
-
-  $('#newtest').addEventListener('click', () => testDialog(null));
-  on('[data-act=newtest]', 'click', () => testDialog(null), view);
-  on('[data-test]', 'click', (e, el) => { const t = (adm().tests || []).find((x) => x.id === el.dataset.test); if (t) testDialog(t); }, view);
-}
-PAGES['adm/tests'] = renderTests;
-PAGES['adm/tasks'] = renderTasks;
 /* ------------------------------------------------------------------- init */
 window.addEventListener('DOMContentLoaded', boot);
 let resizeTimer;
@@ -8049,9 +7786,8 @@ function paletteItems() {
   habitItems().forEach((h) => add('habit', h.name, h.cadence === 'weekly' ? `${Number(h.target) || 1}× a week` : 'daily habit', () => go('shared/habits'), 2));
   (DB.uni.courses || []).forEach((c) => add('course', c.name, c.code || 'course', () => go(`uni/courses/${c.id}`), 2));
   uniFiles().forEach((f) => add('file', f.name, `${courseName(f.courseId) || 'course'}${folderById(f.folderId) ? ' · ' + folderById(f.folderId).name : ''}`, () => openCourseFile(f), 1));
-  allApps().forEach((a) => add('app', appTitle(a), `${stageLabel(a.status)}${a.deadline ? ' · ' + relDays(a.deadline) : ''}`, () => go(`adm/applications/${a.id}`), 2));
-  (DB.admissions.essays || []).forEach((e) => add('essay', e.title, `${essayStateLabel(e.status)} essay`, () => { go('adm/essays'); setTimeout(() => essayDialog(e), 60); }, 2));
-  (DB.admissions.recommenders || []).forEach((p) => add('rec', p.name, [p.role, p.org].filter(Boolean).join(' · ') || 'recommender', () => go('adm/recommenders'), 1));
+  DB.projects.forEach((pr) => add('project', pr.name, `${projectStatusLabel(pr.status)}${pr.due ? ' · ' + relDays(pr.due) : ''}`, () => go(`work/projects/${pr.id}`), 2));
+  DB.meetings.forEach((m) => add('meeting', m.title || meetingKindLabel(m.kind), `${meetingKindLabel(m.kind)} · ${fmtDate(m.date)}`, () => go(`work/meetings/${m.id}`), 2));
   DB.notes.forEach((n) => add('note', n.title, n.path || 'vault root', () => go(`shared/notes/${n.id}`), 1));
   DB.datasets.forEach((d) => add('report', d.name, `${d.kind} · ${d.rows.length} rows`, () => go(`work/reports/${d.id}`), 1));
 
