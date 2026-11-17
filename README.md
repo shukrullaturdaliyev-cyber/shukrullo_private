@@ -1,13 +1,12 @@
 # Shukrullo's personal zettelkasten
 
-A private, single-user operations dashboard with three faces and a set of shared modules.
+A private, single-user operations dashboard with two faces and a set of shared modules.
 
-* **Work** — head of the English department at an SAT-prep school: overview, teacher 1-1 journals, a department page
-  (CSS rates, exam results, class observations, the group register), tasks, CSV report engines.
+* **Work** — head of the Math department at an SAT-prep school: overview, teacher 1-1 journals read either by person
+  or by month, a meeting log, a project board, a department page (CSS rates, exam results, class observations, the
+  group register), a monthly and weekly report for top management, tasks, CSV report engines.
 * **CAU** (Central Asian University) — overview, timetable, courses with their own folders of files, tasks, lecture notes (*Konspekty*).
-* **Apply** — the admissions cycle: universities and scholarships, requirement checklists, essays, recommenders,
-  tests and scores, its own task board.
-* **Everywhere** — a Today page across all three faces, a native calendar with two-way Google sync, habits, goals, a
+* **Everywhere** — a Today page across both faces, a native calendar with two-way Google sync, habits, goals, a
   weekly review page, an Obsidian-style note vault, a health log, finances, settings.
 
 One user, one passphrase. The app itself is static; data lives in a Cloudflare KV namespace and is
@@ -255,6 +254,35 @@ month, and a conversation held afterwards is shown as "next seen" rather than co
 Within a day, entries stay in the order they were written. That order is the shape of the conversation, so nothing
 re-sorts them.
 
+### Projects
+
+`Work → Projects` is the board for anything that runs longer than a conversation. A project carries a status
+(idea, active, paused, done, dropped), a health (on track, at risk, blocked), a lead, start and due dates, the
+teachers on it, and an optional link.
+
+**Milestones are the progress bar.** There is no percentage to keep honest by hand: tick the milestones and the
+bar follows. A milestone records the day it was ticked, which is how the monthly report knows what was hit *in
+that month* rather than merely what is done now.
+
+**Updates are the history.** A dated entry saying what moved and what is stuck. A live project with nothing
+written in a fortnight is flagged on the board, because silence on a project is itself the finding.
+
+The board groups by status and leads with what is wrong: how many are off track, how many milestones are past
+their date, how many have gone quiet. Each project's own page also gathers the meetings filed against it and any
+tasks pointed at it.
+
+### Meetings
+
+`Work → Meetings` is everything with more than one person in the room — department meetings, meetings with
+management, project meetings, parents, students. Each one keeps its kind, date and time, who was there (ticked
+off the teacher register, plus free text for anyone outside it), the agenda, the notes, and — separately — the
+**decisions**, because that is the part that gets quoted upward.
+
+**Actions carry an owner and a date** and are ticked off on the meeting's page. Open actions across every meeting
+are gathered at the top of the log and on the Work overview, so nothing agreed in a room quietly disappears.
+
+The log is grouped by month, with anything still ahead of you shown first.
+
 ### The report for top management
 
 `Work → Reports` turns the journal into something you can send upward. Pick **Monthly** or **Weekly**, step back and
@@ -276,6 +304,10 @@ The report is built only from what is on the record; where a figure is missing i
 - **Actions** — everything set in the period plus anything still open from before, with owner and status.
 - **Exam results, class observations and CSS rate** — the sittings, the scored criteria and the monthly figures that
   sit behind the narrative. Observations booked but not yet carried out are named rather than silently omitted.
+- **Meetings** — every meeting held in the period with who was there, then each one's agenda, notes, decisions and
+  actions written out, and a table of what is still open out of them.
+- **Projects** — every project on the board with status, health, progress and what moved in the period; then, for
+  the ones that actually moved, the milestones hit and the updates written, verbatim.
 - **Movement** — the same measures against the period before, with the change.
 
 The masthead signs itself from `Everywhere → Settings`: the name there, and a **Role** field beside it that
@@ -318,34 +350,6 @@ later save of the course list stays small. Anything over ~700 KB is deliberately
 big shelf cannot exhaust the browser quota; those files are fetched from KV when opened. The backup in Settings
 carries the uploaded bytes too, so it still rebuilds the desk from nothing — a big shelf simply makes a big file.
 
-### Admissions
-
-One row per university or scholarship, each carrying everything that application needs.
-
-* **The application** — kind, programme, level, country, round (ED/ED2/EA/REA/RD/rolling), deadline, decision date,
-  portal link, fee, cost a year and aid a year. Net cost is cost minus aid, so offers can be compared on what you
-  would actually pay.
-* **Stage** — researching → preparing → submitted → interview → decided, moved by clicking the stepper. Reaching
-  *decided* with no answer recorded opens the decision dialog; that stores the outcome, the aid offered and the
-  reply-by date.
-* **Checklist** — a new application starts with the usual list for its kind (transcript, personal statement, letters,
-  English test, passport, CV, financial documents, fee), each item tickable, datable and annotatable. **Paste list**
-  takes a requirements page straight off a university site, one per line, strips bullets and numbering, and skips
-  anything already on the checklist.
-* **Essays** — one essay can serve several applications and counts on all of them. Each keeps the prompt in the
-  university's own words, the limit in words or characters, and a status (idea → draft → revising → final).
-  **Write** creates the draft as a note under `Admissions/Essays` and opens the vault writer on it.
-* **Recommenders** — the people writing for you, with role, organisation and contact. Per application a letter moves
-  asked → agreed → submitted with one click, and the recommenders page shows who is still owed on what.
-* **Tests** — IELTS, SAT and the rest: sitting date, status, score against target, section scores, fee, and the date
-  the score stops counting. Scores expiring within a year are called out.
-* **Interviews and tasks** — an interview has a date, time, mode and notes; a task on the *Apply* board can be tied to
-  one application and shows on its page.
-
-Nothing is silent: the overview lists a passed deadline as late, and within three weeks of one it names outstanding
-requirements, letters not yet in, essays still in draft and fees not yet paid. Deadlines, decision dates, reply-by
-dates and interviews all reach the Today page and the calendar.
-
 ### The vault
 
 Folder tree with persisted collapse state, search across title/path/tags, a Move dialog with folder
@@ -373,8 +377,8 @@ so the money stays on the books, leaves the spending total, and lands where a sa
 Day, week and month views drawn by the app: lane-packed overlapping events, a red now-line scrolled into
 view, an all-day row, and `+N more` in month cells jumping to that day. Five kinds of source are merged —
 timetable (expanded per week and limited to the semester dates), exams, deadlines (task *and* step due
-dates, on every face), admissions dates (deadlines, decisions, reply-by dates and interviews), logged 1-1s,
-and every Google calendar in its own colour. Legend chips toggle each source and the
+dates, on every face), project dates (a project's own due date and every milestone still open), meetings,
+logged 1-1s, and every Google calendar in its own colour. Legend chips toggle each source and the
 hidden set persists. Clicking an empty slot opens *New event* with a destination: any Google calendar you
 can write to, or "Desk · task deadline" which creates a task instead.
 
