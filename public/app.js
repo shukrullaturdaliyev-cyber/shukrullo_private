@@ -256,7 +256,7 @@ function download(filename, text, mime = 'application/json') {
 
 /* --------------------------------------------------- 2. storage + sync layer */
 
-const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets', 'habits', 'goals', 'health', 'dept', 'projects', 'meetings'];
+const COLLECTIONS = ['settings', 'notes', 'teachers', 'tasks', 'uni', 'finances', 'datasets', 'habits', 'goals', 'health', 'dept', 'projects', 'meetings', 'qa'];
 const LS = 'desk:';
 const PASS_KEY = 'desk:pass';
 
@@ -286,6 +286,7 @@ const DEFAULTS = () => ({
   dept: { standard: 80, css: [], exams: [], observations: [], groups: [], commentary: {} },
   projects: [],
   meetings: [],
+  qa: { title: 'QA of teachers', from: '', to: '', slots: [], pending: [] },
 });
 
 let DB = DEFAULTS();
@@ -399,6 +400,12 @@ async function loadAll() {
     ['milestones', 'updates', 'teacherIds'].forEach((k) => { if (!Array.isArray(p[k])) p[k] = []; });
     if (!PROJECT_STATES.some(([v]) => v === p.status)) p.status = 'active';
     if (!PROJECT_HEALTH.some(([v]) => v === p.health)) p.health = 'on';
+  });
+  DB.qa = Object.assign({ title: 'QA of teachers', from: '', to: '', slots: [], pending: [] }, DB.qa || {});
+  ['slots', 'pending'].forEach((k) => { if (!Array.isArray(DB.qa[k])) DB.qa[k] = []; });
+  DB.qa.slots.forEach((x) => {
+    if (!QA_STATES.some(([v]) => v === x.status)) x.status = 'planned';
+    if (!x.scores || typeof x.scores !== 'object') x.scores = {};
   });
   if (!Array.isArray(DB.meetings)) DB.meetings = [];
   DB.meetings.forEach((m) => {
@@ -594,6 +601,7 @@ const NAV = {
     { id: 'teachers', label: '1-1s', ico: '☺' },
     { id: 'meetings', label: 'Meetings', ico: '⌬' },
     { id: 'projects', label: 'Projects', ico: '⬢' },
+    { id: 'qa', label: 'QA plan', ico: '◉' },
     { id: 'dept', label: 'Department', ico: '◫' },
     { id: 'brief', label: 'Reports', ico: '❖' },
     { id: 'tasks', label: 'Tasks', ico: '▤' },
@@ -699,6 +707,7 @@ function renderNav() {
     notes: DB.notes.length,
     projects: liveProjects().length,
     meetings: DB.meetings.length,
+    qa: qaBehind().length,
   };
   const group = (title, list, faceKey, titleHTML) => `<div class="navgroup">${titleHTML || esc(title)}</div>` + list.map((p) => {
     const active = r.face === faceKey && r.page === p.id;
@@ -744,7 +753,7 @@ const PAGES = {}; // filled in by the module sections below
 
 /* Dense pages opt out of the reading measure the editorial layout imposes. */
 const WIDE_PAGES = new Set(['shared/calendar', 'shared/notes', 'uni/timetable', 'uni/konspekty',
-  'work/reports', 'work/brief', 'work/tasks', 'work/projects', 'work/meetings', 'uni/tasks']);
+  'work/reports', 'work/brief', 'work/tasks', 'work/projects', 'work/meetings', 'work/qa', 'uni/tasks']);
 
 function render() {
   const r = route();
@@ -1507,7 +1516,7 @@ function renderTeacherPage(view, r) {
   const lastCss = myCss.slice(-1)[0] || null;
   const myExams = examsFor(t.id);
   const myPool = poolPassRate(myExams);
-  const myObs = obsFor(t.id);
+  const myObs = allObsFor(t.id);
   const myGroups = groupsFor(t.id);
 
   topbar(t.name, {
@@ -1621,7 +1630,10 @@ function renderTeacherPage(view, r) {
   $('#texam').addEventListener('click', () => examResultDialog(null, t.id));
   $('#tobs').addEventListener('click', () => observationDialog(null, t.id));
   on('[data-exam]', 'click', (e, el) => { const x = examRows().find((y) => y.id === el.dataset.exam); if (x) examResultDialog(x); }, view);
-  on('[data-obs]', 'click', (e, el) => { const x = obsRows().find((y) => y.id === el.dataset.obs); if (x) observationDialog(x); }, view);
+  on('[data-obs]', 'click', (e, el) => {
+    const x = obsRows().find((y) => y.id === el.dataset.obs);
+    if (x) observationDialog(x); else go('work/qa');   // QA write-ups are edited on the plan
+  }, view);
 
   // scorecard is derived from potentially large datasets — do it off the paint path
   setTimeout(() => {
@@ -1638,6 +1650,14 @@ function editTeacherDialog(t) {
     body: `
       <label class="f"><span>Name</span><input name="name" value="${attr(t.name)}"></label>
       <label class="f"><span>What they teach</span><input name="teaches" value="${attr(t.teaches || '')}"></label>
+      <div class="row">
+        <label class="f"><span>Tier</span><select name="tier">
+          <option value=""${t.tier ? '' : ' selected'}>— none —</option>
+          ${[['1', 'Tier 1 — first month'], ['2', 'Tier 2 — months 2-3'], ['3', 'Tier 3 — 4+ months'], ['exp', 'Experienced']]
+            .map(([v, l]) => `<option value="${v}"${t.tier === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+        <label class="f"><span>Branch</span><input name="branch" value="${attr(t.branch || '')}" placeholder="Shaxriston, Drujba, Chilanzar, Online…"></label>
+      </div>
       <details style="margin-top:10px"><summary class="mini b" style="cursor:pointer;padding:6px 0">ADMIN</summary>
         <label class="f"><span>Groups they teach (comma separated — used to attribute exam CSVs with no teacher column)</span>
           <input name="groups" value="${attr((t.groups || []).join(', '))}" placeholder="G-12A, Blue-2, evening group"></label>
@@ -1661,7 +1681,7 @@ function editTeacherDialog(t) {
       const name = d.name.trim();
       if (!name) return false;
       Object.assign(t, {
-        name, teaches: d.teaches.trim(),
+        name, teaches: d.teaches.trim(), tier: d.tier || '', branch: d.branch.trim(),
         groups: d.groups.split(',').map((s) => s.trim()).filter(Boolean),
         joined: d.joined || '', left: d.left || '',
       });
@@ -2046,17 +2066,17 @@ function renderDept(view) {
       }).join('')}</div>` : emptyState('No exam results yet', 'Record a sitting — who sat, who passed, who is retaking — and pass rates build up per teacher.',
         actBtn('Record a result', 'newexam')), { flush: recentExams.length > 0 })}
 
-      ${panel('Observations', obsRows().length ? `<div class="list">${[...obsRows()]
+      ${panel('Observations', allObservations().length ? `<div class="list">${allObservations()
         .sort((a, b) => Number(a.done) - Number(b.done) || String(b.date).localeCompare(String(a.date)))
         .slice(0, 10).map((o) => {
           const t = teacherById(o.teacherId); const sc = obsScore(o);
           return `<div class="list-row click" data-obs="${attr(o.id)}">
-            <div class="grow"><div class="t">${esc((t || {}).name || 'Unknown teacher')}${o.group ? ' · ' + esc(o.group) : ''}</div>
-              <div class="m">${esc(fmtDate(o.date))}${o.done ? '' : ' · scheduled'}</div></div>
+            <div class="grow"><div class="t">${esc((t || {}).name || o.teacherName || 'Unknown teacher')}${o.group ? ' · ' + esc(o.group) : ''}</div>
+              <div class="m">${esc(fmtDate(o.date))}${o.done ? '' : ' · scheduled'}${o.source === 'qa' ? ' · QA plan' : ''}</div></div>
             ${sc == null ? `<span class="pill ${o.done ? 'warn' : ''}">${o.done ? 'not scored' : esc(relDays(o.date))}</span>`
               : `<span class="pill ${sc >= 4 ? 'ok' : sc >= 3 ? '' : 'bad'}">${sc} / 5</span>`}</div>`;
         }).join('')}</div>` : emptyState('No observations yet', 'You have told two teachers to observe others. Record your own the same way — five criteria, one to five.',
-          actBtn('Add an observation', 'newobs')), { flush: obsRows().length > 0 })}
+          actBtn('Add an observation', 'newobs')), { flush: allObservations().length > 0 })}
     </div>
 
     ${panel(`Groups · ${groupRows().length}`, groupRows().length ? `<div class="scroll-x"><table class="data">
@@ -2088,7 +2108,10 @@ function renderDept(view) {
   }, view);
   on('[data-teacher]', 'click', (e, el) => go(`work/teachers/${el.dataset.teacher}`), view);
   on('[data-exam]', 'click', (e, el) => { const x = examRows().find((y) => y.id === el.dataset.exam); if (x) examResultDialog(x); }, view);
-  on('[data-obs]', 'click', (e, el) => { const x = obsRows().find((y) => y.id === el.dataset.obs); if (x) observationDialog(x); }, view);
+  on('[data-obs]', 'click', (e, el) => {
+    const x = obsRows().find((y) => y.id === el.dataset.obs);
+    if (x) observationDialog(x); else go('work/qa');
+  }, view);
   on('[data-group]', 'click', (e, el) => { const x = groupRows().find((y) => y.id === el.dataset.group); if (x) groupDialog(x); }, view);
   on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
 }
@@ -2155,8 +2178,8 @@ function teacherReport(t, p, prev) {
   const inWindow = (list, a, b) => list.filter((x) => x.date && x.date >= a && x.date <= b);
   const exams = inWindow(examsFor(t.id), p.from, p.to);
   const examsPrev = inWindow(examsFor(t.id), prev.from, prev.to);
-  const obs = inWindow(obsFor(t.id).filter((o) => o.done), p.from, p.to);
-  const obsPrev = inWindow(obsFor(t.id).filter((o) => o.done), prev.from, prev.to);
+  const obs = inWindow(allObsFor(t.id).filter((o) => o.done), p.from, p.to);
+  const obsPrev = inWindow(allObsFor(t.id).filter((o) => o.done), prev.from, prev.to);
 
   const isTask = (e) => e.kind === 'task_me' || e.kind === 'task_them';
   return {
@@ -2982,7 +3005,29 @@ function meetingActionDialog(m, existing) {
 
 /* ---- the projects board ---- */
 
+/** The observation plan is a project too, but its progress lives in the plan
+ *  rather than in milestones, so its card reads from there. */
+const isQAProject = (p) => p.link === QA_LINK && qaSlots().length > 0;
+
 function projectCard(p) {
+  if (isQAProject(p)) {
+    const st = qaStats();
+    return `<div class="pjcard click" data-project="${attr(p.id)}">
+      <div class="pjhead">
+        <div class="grow"><div class="pjname">${esc(p.name)}</div>
+          <div class="mini mut">Observation plan · ${esc(fmtDate(qaPlan().from))} – ${esc(fmtDate(qaPlan().to))}</div></div>
+        <span class="pill ${st.behind ? 'bad' : HEALTH_PILL[p.health] || ''}">${st.behind ? st.behind + ' unwritten' : esc(projectHealthLabel(p.health))}</span>
+      </div>
+      ${p.summary ? `<p class="pjsum">${esc(p.summary.slice(0, 150))}${p.summary.length > 150 ? '…' : ''}</p>` : ''}
+      <div class="pjbar"><span style="width:${st.pct}%"></span></div>
+      <div class="pjmeta">
+        <span>${st.done}/${st.planned} classes observed</span>
+        <span>${st.seen}/${st.teachers} teachers</span>
+        <span>${st.open} open slots</span>
+        <span>${st.daysLeft} days left</span>
+      </div>
+    </div>`;
+  }
   const pr = projectProgress(p);
   const next = nextMilestone(p);
   const late = (p.milestones || []).filter((m) => !m.done && m.due && daysUntil(m.due) < 0).length;
@@ -3057,6 +3102,7 @@ function renderProjects(view, r) {
   if (btn) btn.addEventListener('click', open);
   on('[data-act="newproject"]', 'click', open, view);
   on('[data-project]', 'click', (e, el) => go(`work/projects/${el.dataset.project}`), view);
+  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
 }
 
 function renderProjectPage(view, r) {
@@ -3080,6 +3126,17 @@ function renderProjectPage(view, r) {
   });
 
   view.innerHTML = `
+    ${isQAProject(p) ? (() => {
+      const st = qaStats();
+      return panel('The observation plan', `<div class="list">
+        <div class="list-row click" data-goto="work/qa">
+          <div class="grow"><div class="t">${st.done} of ${st.planned} classes observed · ${st.written} written up</div>
+            <div class="m">${esc(fmtDate(qaPlan().from))} – ${esc(fmtDate(qaPlan().to))} · ${st.open} open slots · ${st.daysLeft} days left</div></div>
+          <span class="pill ${st.behind ? 'bad' : 'ok'}">${st.behind ? st.behind + ' not written up' : 'up to date'}</span>
+        </div></div>`, { flush: true, actions: `<a class="btn primary sm" href="${href('work/qa')}">Open the plan</a>`,
+          sub: 'The day-by-day schedule and every class write-up live there' });
+    })() : ''}
+
     <div class="stats">
       ${statBox(`${pr.pct}%`, 'complete', pr.counted ? `<div class="delta flat">${pr.done} of ${pr.total} milestones</div>` : `<div class="delta flat">no milestones set</div>`)}
       ${statBox(projectHealthLabel(p.health), 'health',
@@ -3149,6 +3206,7 @@ function renderProjectPage(view, r) {
     if (u) updateDialog(p, u);
   }, view);
   on('[data-meeting]', 'click', (e, el) => go(`work/meetings/${el.dataset.meeting}`), view);
+  on('[data-goto]', 'click', (e, el) => go(el.dataset.goto), view);
   on('[data-task]', 'click', (e, el) => {
     const t = taskById(el.dataset.task);
     if (t) taskDialog(t, t.face);
@@ -3293,6 +3351,310 @@ function renderMeetingPage(view, r) {
   });
 }
 PAGES['work/meetings'] = renderMeetings;
+
+
+/* ======================================== 5e. the QA observation plan =====
+ * Project 1 has a shape no generic project board can hold: a day-by-day
+ * schedule of individual classes, each of which needs its own write-up. It
+ * gets its own page, built around the one question asked every evening —
+ * what am I observing today, and have I written it up.
+ * ========================================================================= */
+
+const QA_STATES = [['planned', 'Planned'], ['done', 'Observed'], ['missed', 'Missed']];
+/** A project whose `link` is this is the observation plan wearing a project's hat. */
+const QA_LINK = '#work/qa';
+const qaPlan = () => DB.qa;
+const qaSlots = () => qaPlan().slots || [];
+const qaPending = () => qaPlan().pending || [];
+/** A slot with nobody in it is an open slot — kept so the plan does not move
+ *  when a teacher is finally added. */
+const qaFilled = () => qaSlots().filter((s) => s.name);
+const qaOpen = () => qaSlots().filter((s) => !s.name);
+const qaDone = () => qaSlots().filter((s) => s.status === 'done');
+const qaMissed = () => qaSlots().filter((s) => s.status === 'missed');
+const qaWritten = () => qaDone().filter((s) => (s.went || '').trim() || (s.improve || '').trim() || (s.notes || '').trim());
+/** Planned, the day has passed, still nothing written. The daily nag. */
+const qaBehind = () => qaFilled()
+  .filter((s) => s.status === 'planned' && s.date < todayISO())
+  .sort((a, b) => a.date.localeCompare(b.date) || a.n - b.n);
+const qaOn = (iso) => qaSlots().filter((s) => s.date === iso).sort((a, b) => a.n - b.n);
+const qaDates = () => [...new Set(qaSlots().map((s) => s.date))].sort();
+const qaBranchOn = (iso) => (qaOn(iso).find((s) => s.branch) || {}).branch || '';
+/** The next day that still has something planned on it. */
+function qaNextDay() {
+  const today = todayISO();
+  return qaDates().find((d) => d >= today && qaOn(d).some((s) => s.name && s.status === 'planned')) || '';
+}
+const qaSlotById = (id) => qaSlots().find((s) => s.id === id);
+
+/** One row per teacher in the plan: how many classes, how many written up. */
+function qaTeacherRows() {
+  const by = new Map();
+  qaFilled().forEach((s) => {
+    const k = s.name;
+    if (!by.has(k)) by.set(k, { name: k, tier: s.tier || '', teacherId: s.teacherId || '', planned: 0, done: 0, missed: 0, dates: [] });
+    const r = by.get(k);
+    r.planned++;
+    if (s.status === 'done') r.done++;
+    if (s.status === 'missed') r.missed++;
+    r.dates.push(s.date);
+  });
+  const order = { 1: 0, 2: 1, 3: 2, exp: 3 };
+  return [...by.values()].sort((a, b) =>
+    (order[a.tier] == null ? 9 : order[a.tier]) - (order[b.tier] == null ? 9 : order[b.tier])
+    || b.planned - a.planned || a.name.localeCompare(b.name));
+}
+
+function qaStats() {
+  const filled = qaFilled();
+  const done = qaDone();
+  const left = daysBetween(new Date(), fromISO(qaPlan().to || todayISO()));
+  return {
+    planned: filled.length,
+    done: done.length,
+    missed: qaMissed().length,
+    written: qaWritten().length,
+    open: qaOpen().length,
+    behind: qaBehind().length,
+    pct: filled.length ? Math.round((done.length / filled.length) * 100) : 0,
+    teachers: new Set(filled.map((s) => s.name)).size,
+    seen: new Set(done.map((s) => s.name)).size,
+    daysLeft: left,
+  };
+}
+
+/** The weeks of the plan, Monday-anchored, for the schedule table. */
+function qaWeeks() {
+  const out = [];
+  qaDates().forEach((d) => {
+    const wk = toISO(weekStart(d));
+    let row = out.find((x) => x.week === wk);
+    if (!row) out.push((row = { week: wk, days: [] }));
+    row.days.push(d);
+  });
+  return out;
+}
+
+/** A done slot, in the same shape as a department observation, so the report
+ *  and the department page can count it without a second code path. */
+function qaObservations() {
+  return qaDone().map((s) => ({
+    id: 'qa-' + s.id, qaId: s.id, teacherId: s.teacherId || '', teacherName: s.name,
+    date: s.observedOn || s.date, group: s.group || '', done: true,
+    scores: s.scores || {}, notes: [s.went, s.improve].filter(Boolean).join(' · '),
+    actions: s.action || '', source: 'qa',
+  }));
+}
+/** Every observation the desk knows about: hand-entered and from the QA plan. */
+const allObservations = () => [...obsRows(), ...qaObservations()];
+const allObsFor = (tid) => allObservations().filter((o) => o.teacherId === tid)
+  .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+const QA_WINDOWS = [
+  ['Even days', 'Shaxriston', 'classes ending before 16:00'],
+  ['Even days', 'Drujba', 'classes ending by about 15:00 — travel to Shaxriston'],
+  ['Odd days', 'Drujba', 'classes ending before 18:00'],
+  ['Odd days', 'Shaxriston', 'classes ending by about 17:00 — travel to Drujba'],
+];
+
+/* ---- writing up one class ---- */
+
+function qaFeedbackDialog(s) {
+  const scale = (k, l) => `<label class="f"><span>${esc(l)}</span>
+    <select name="s_${k}">
+      <option value="">—</option>
+      ${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${Number((s.scores || {})[k]) === n ? ' selected' : ''}>${n}</option>`).join('')}
+    </select></label>`;
+  openDialog({
+    title: `${s.name || 'Open slot'} · ${fmtDate(s.date)}`,
+    submitLabel: 'Save the write-up',
+    wide: true,
+    body: `
+      <p class="mini mut" style="margin:0 0 10px">${esc(s.branch || 'no branch')} · class ${s.n}${s.group ? ' · ' + esc(s.group) : ''}</p>
+      <div class="row">
+        <label class="f"><span>How it went</span><select name="status">
+          ${QA_STATES.map(([v, l]) => `<option value="${v}"${s.status === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span>Observed on</span><input name="observedOn" type="date" value="${attr(s.observedOn || s.date)}"></label>
+        <label class="f"><span>Group</span><input name="group" value="${attr(s.group || '')}" placeholder="gr. 2"></label>
+      </div>
+      <p class="mini b" style="margin:14px 0 6px">SCORES · 1 to 5, leave blank for anything you did not look at</p>
+      <div class="row">${OBS_CRITERIA.slice(0, 3).map(([k, l]) => scale(k, l)).join('')}</div>
+      <div class="row">${OBS_CRITERIA.slice(3).map(([k, l]) => scale(k, l)).join('')}<div style="flex:1"></div></div>
+      <label class="f"><span>What went well</span><textarea name="went" rows="3">${esc(s.went || '')}</textarea></label>
+      <label class="f"><span>What to improve</span><textarea name="improve" rows="3">${esc(s.improve || '')}</textarea></label>
+      <label class="f"><span>Agreed with the teacher</span><input name="action" value="${attr(s.action || '')}" placeholder="the one thing they will change"></label>
+      <label class="f"><span>Anything else</span><textarea name="notes" rows="2">${esc(s.notes || '')}</textarea></label>`,
+    onSubmit: (d) => {
+      const scores = {};
+      OBS_CRITERIA.forEach(([k]) => { const v = Number(d['s_' + k]); if (v >= 1 && v <= 5) scores[k] = v; });
+      Object.assign(s, {
+        status: d.status, observedOn: d.observedOn || s.date, group: d.group.trim(), scores,
+        went: d.went.trim(), improve: d.improve.trim(), action: d.action.trim(), notes: d.notes.trim(),
+      });
+      saveRender('qa');
+    },
+  });
+}
+
+/** Put a teacher who was waiting on groups into one of the open slots. */
+function qaAssignDialog(s) {
+  const waiting = qaPending();
+  openDialog({
+    title: `Fill the open slot · ${fmtDate(s.date)}`,
+    submitLabel: 'Put them in',
+    body: `
+      <p class="mini mut" style="margin:0 0 10px">${esc(s.branch || 'no branch set')} · class ${s.n}</p>
+      <label class="f"><span>Teacher</span><input name="name" value="${attr(s.name || '')}" list="qawaiting" placeholder="name"></label>
+      <datalist id="qawaiting">${waiting.map((p) => `<option value="${attr(p.name)}">`).join('')}
+        ${activeTeachers().map((t) => `<option value="${attr(t.name)}">`).join('')}</datalist>
+      <div class="row">
+        <label class="f"><span>Branch</span><input name="branch" value="${attr(s.branch || '')}"></label>
+        <label class="f"><span>Group</span><input name="group" value="${attr(s.group || '')}" placeholder="gr. 1"></label>
+      </div>
+      <p class="mini">Open slots were left in the plan on purpose, so filling one does not move anything else.</p>`,
+    extraFooter: s.name ? `<button type="button" class="btn danger left" id="qaclear">Empty the slot</button>` : '',
+    onOpen: (dlg, close) => {
+      const c = $('#qaclear', dlg);
+      if (c) c.addEventListener('click', () => {
+        Object.assign(s, { name: '', teacherId: '', tier: '', group: '', status: 'planned' });
+        close(); saveRender('qa');
+      });
+    },
+    onSubmit: (d) => {
+      const name = d.name.trim();
+      if (!name) { toast('Pick a teacher, or use “Empty the slot”.', 'bad'); return false; }
+      const match = DB.teachers.find((t) => normName(t.name) === normName(name));
+      const waits = waiting.find((p) => normName(p.name) === normName(name));
+      Object.assign(s, {
+        name, teacherId: match ? match.id : '', tier: (match && match.tier) || (waits && waits.tier) || '',
+        branch: d.branch.trim(), group: d.group.trim(),
+      });
+      saveRender('qa');
+    },
+  });
+}
+
+/* ---- the page ---- */
+
+const QA_CHIP = { done: 'ok', missed: 'bad', planned: '' };
+
+function qaSlotRow(s) {
+  const t = s.teacherId ? teacherById(s.teacherId) : null;
+  return `<div class="list-row">
+    <span class="pill num">${s.n}</span>
+    <div class="grow"><div class="t ${s.status === 'done' ? 'done-text' : ''}">${s.name ? esc(s.name) : '<span class="mut">Open slot</span>'}</div>
+      <div class="m">${esc(s.branch || '—')}${s.group ? ' · ' + esc(s.group) : ''}${t ? ' · tier ' + esc(t.tier || '?') : ''}</div></div>
+    ${s.status === 'done' ? `<span class="pill ok">written up</span>`
+      : s.status === 'missed' ? `<span class="pill bad">missed</span>` : ''}
+    ${s.name ? `<button class="btn ${s.status === 'done' ? 'sm' : 'primary sm'}" data-fb="${attr(s.id)}">${s.status === 'done' ? 'Edit' : 'Write feedback'}</button>`
+      : `<button class="btn sm" data-fill="${attr(s.id)}">Fill</button>`}
+  </div>`;
+}
+
+function renderQA(view) {
+  const p = qaPlan();
+  if (!qaSlots().length) {
+    topbar('QA plan');
+    view.innerHTML = emptyState('No observation plan loaded',
+      'The QA plan holds a day-by-day schedule of classes to observe, each with its own write-up. Nothing has been loaded into it yet.');
+    return;
+  }
+  const st = qaStats();
+  const today = todayISO();
+  const showDay = qaOn(today).length ? today : qaNextDay();
+  const todays = showDay ? qaOn(showDay) : [];
+  const behind = qaBehind();
+
+  topbar('QA plan', {
+    crumb: `${esc(p.title || 'QA of teachers')} · ${esc(fmtDate(p.from))} – ${esc(fmtDate(p.to))}`,
+    actions: `<a class="btn sm" href="${href('work/projects')}">Projects</a>
+      <a class="btn sm" href="${href('work/dept')}">Department</a>`,
+  });
+
+  const lines = [];
+  if (behind.length) lines.push({ kind: 'bad', html: `<b>${behind.length}</b> class${behind.length === 1 ? '' : 'es'} observed but not written up` });
+  if (todays.filter((s) => s.name && s.status === 'planned').length) {
+    lines.push({ kind: 'warn', html: `<b>${todays.filter((s) => s.name && s.status === 'planned').length}</b> to observe ${showDay === today ? 'today' : 'on ' + fmtDate(showDay)}` });
+  }
+  lines.push({ kind: '', html: `<b>${st.done}</b> of <b>${st.planned}</b> done` });
+  if (st.daysLeft >= 0) lines.push({ kind: '', html: `<b>${st.daysLeft}</b> days left in the cycle` });
+
+  view.innerHTML = `
+    ${hero(p.title || 'QA of teachers', `${faceName('work')} · observation plan`, lines)}
+
+    <div class="stats">
+      ${statBox(`${st.done}/${st.planned}`, 'classes observed', `<div class="delta flat">${st.pct}% of the plan</div>`)}
+      ${statBox(st.written, 'written up', st.done > st.written ? `<div class="delta down">${st.done - st.written} with no words</div>` : st.done ? `<div class="delta up">every one</div>` : '')}
+      ${statBox(`${st.seen}/${st.teachers}`, 'teachers seen', st.missed ? `<div class="delta down">${st.missed} missed</div>` : '')}
+      ${statBox(st.open, 'open slots', qaPending().length ? `<div class="delta flat">${qaPending().length} waiting on groups</div>` : '')}
+    </div>
+
+    ${panel(showDay === today ? 'Today' : `Next: ${fmtDate(showDay, { weekday: 'long', day: 'numeric', month: 'long' })}`,
+      todays.length ? `<div class="list">${todays.map(qaSlotRow).join('')}</div>`
+        : emptyState('Nothing scheduled', 'No classes are planned for today or anything after it.'),
+      { flush: true, sub: showDay ? `${esc(qaBranchOn(showDay) || 'no branch')} · ${esc(fmtDate(showDay, { weekday: 'long', day: 'numeric', month: 'long' }))}` : '' })}
+
+    ${behind.length ? panel(`Not written up · ${behind.length}`, `<div class="list">${behind.map((s) => `
+      <div class="list-row">
+        <div class="grow"><div class="t">${esc(s.name)}</div>
+          <div class="m">${esc(fmtDate(s.date))} · ${esc(s.branch)} · class ${s.n}${s.group ? ' · ' + esc(s.group) : ''}</div></div>
+        <span class="pill bad">${esc(relDays(s.date))}</span>
+        <button class="btn primary sm" data-fb="${attr(s.id)}">Write it up</button>
+      </div>`).join('')}</div>`,
+      { flush: true, sub: 'The day has passed and there is still nothing on the record' }) : ''}
+
+    ${panel('The plan', qaWeeks().map(({ week, days }) => {
+      const wdone = days.flatMap(qaOn).filter((s) => s.status === 'done').length;
+      const wplan = days.flatMap(qaOn).filter((s) => s.name).length;
+      const span = `${fmtDate(days[0], { day: 'numeric', month: 'short' })} – ${fmtDate(days[days.length - 1], { day: 'numeric', month: 'short' })}`;
+      return `<div class="qaweek">
+        <h4>${esc(span)} <span class="mut">· ${wdone} of ${wplan} observed</span></h4>
+        ${days.map((d) => `<div class="qaday${d === today ? ' now' : ''}">
+          <div class="qadate">${esc(fmtDate(d, { weekday: 'short', day: 'numeric', month: 'short' }))}</div>
+          <div class="qabranch">${esc(qaBranchOn(d) || '—')}</div>
+          <div class="qaslots">${qaOn(d).map((s) => `
+            <button class="qachip ${s.name ? (QA_CHIP[s.status] || '') : 'open'}" data-fb="${attr(s.id)}"
+              title="${attr(`${s.name || 'Open slot'}${s.group ? ' · ' + s.group : ''} · class ${s.n}`)}">
+              ${s.name ? esc(s.name.split(' ')[0]) : '+'}${s.group ? ` <span class="g">${esc(s.group.replace(/^gr\.\s*/, ''))}</span>` : ''}</button>`).join('')}</div>
+        </div>`).join('')}
+      </div>`;
+    }).join(''), { sub: 'Green is written up, red is missed, faint is an open slot. Press any class to write it up.' })}
+
+    ${panel(`Every teacher · ${qaTeacherRows().length}`, `<div class="scroll-x"><table class="data">
+      <thead><tr><th>Tier</th><th>Teacher</th><th class="n">Planned</th><th class="n">Observed</th><th>Progress</th><th>Dates</th></tr></thead>
+      <tbody>${qaTeacherRows().map((r) => `<tr${r.teacherId ? ` class="click" data-teacher="${attr(r.teacherId)}"` : ''}>
+        <td>${esc(r.tier ? (r.tier === 'exp' ? 'Exp' : r.tier) : '—')}</td>
+        <td>${esc(r.name)}</td>
+        <td class="n">${r.planned}</td>
+        <td class="n">${r.done}</td>
+        <td><div class="pjbar" style="min-width:70px"><span style="width:${Math.round((r.done / r.planned) * 100)}%"></span></div></td>
+        <td class="mini mut">${esc(r.dates.map((d) => fmtDate(d, { day: 'numeric', month: 'short' })).join(', '))}</td>
+      </tr>`).join('')}</tbody></table></div>`, { flush: true })}
+
+    ${qaPending().length ? panel(`Waiting on groups · ${qaPending().length}`, `<div class="list">${qaPending().map((x) => `
+      <div class="list-row">
+        <span class="pill">${esc(x.tier === 'exp' ? 'Exp' : x.tier || '—')}</span>
+        <div class="grow"><div class="t">${esc(x.name)}</div><div class="m">${esc(x.branch || 'branch not set')}</div></div>
+      </div>`).join('')}</div>`,
+      { flush: true, sub: 'They go into the open slots once their groups are sent — press Fill on any open slot above' }) : ''}
+
+    ${panel('When I can observe', `<div class="scroll-x"><table class="data">
+      <thead><tr><th>Day</th><th>Branch</th><th>Observe only</th></tr></thead>
+      <tbody>${QA_WINDOWS.map((w) => `<tr><td>${esc(w[0])}</td><td>${esc(w[1])}</td><td>${esc(w[2])}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <p class="mini" style="margin:10px 0 0">Odd days are Monday, Wednesday, Friday; even days are Tuesday, Thursday, Saturday.
+    If a planned teacher only has classes later than this, swap them with another teacher from the same branch that week.</p>`,
+      { flush: true })}`;
+
+  on('[data-fb]', 'click', (e, el) => {
+    const s = qaSlotById(el.dataset.fb);
+    if (!s) return;
+    if (s.name) qaFeedbackDialog(s); else qaAssignDialog(s);
+  }, view);
+  on('[data-fill]', 'click', (e, el) => { const s = qaSlotById(el.dataset.fill); if (s) qaAssignDialog(s); }, view);
+  on('[data-teacher]', 'click', (e, el) => go(`work/teachers/${el.dataset.teacher}`), view);
+}
+PAGES['work/qa'] = renderQA;
 
 /* ============================================================ 6. CSV reports */
 
@@ -6714,7 +7076,8 @@ function renderSettings(view) {
         <div class="list-row"><div class="grow">Teachers</div><span class="num">${DB.teachers.length}</span></div>
         <div class="list-row"><div class="grow">Tasks</div><span class="num">${DB.tasks.length}</span></div>
         <div class="list-row"><div class="grow">Datasets</div><span class="num">${DB.datasets.length}</span></div>
-        <div class="list-row"><div class="grow">Department</div><span class="num">${cssRows().length} CSS <span class="mut">· ${examRows().length} exams · ${obsRows().length} obs · ${groupRows().length} groups</span></span></div>
+        <div class="list-row"><div class="grow">Department</div><span class="num">${cssRows().length} CSS <span class="mut">· ${examRows().length} exams · ${allObservations().length} obs · ${groupRows().length} groups</span></span></div>
+        <div class="list-row"><div class="grow">QA plan</div><span class="num">${qaSlots().length}${qaSlots().length ? ` <span class="mut">· ${qaStats().done} observed · ${qaStats().open} open</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Course files</div><span class="num">${uniFiles().length}${uniFiles().some((f) => f.kind === 'file') ? ` <span class="mut">· ${fileSize(sum(uniFiles().filter((f) => f.kind === 'file').map((f) => Number(f.size) || 0)))}</span>` : ''}</span></div>
         <div class="list-row"><div class="grow">Transactions</div><span class="num">${(DB.finances.tx || []).length}</span></div>
         <div class="list-row"><div class="grow">Habits</div><span class="num">${habitItems(true).length}${Object.keys(DB.habits.ticks || {}).length ? ` <span class="mut">· ${Object.keys(DB.habits.ticks).length} days ticked</span>` : ''}</span></div>
@@ -7076,6 +7439,8 @@ function renderToday(view) {
   const pjSoon = projectDates().filter((d) => { const n = daysUntil(d.date); return n >= 0 && n <= 30; });
   const pjLate = overdueMilestones();
   const mtSoon = upcomingMeetings(7);
+  const qaToday = qaOn(iso).filter((x) => x.name);
+  const qaLate = qaBehind();
   const overdue = deadlines.filter((d) => daysUntil(d.due) < 0);
   const today = deadlines.filter((d) => daysUntil(d.due) === 0);
   const soon = deadlines.filter((d) => { const n = daysUntil(d.due); return n > 0 && n <= 7; });
@@ -7095,6 +7460,11 @@ function renderToday(view) {
   if (pjLate.length) lines.push({ kind: 'bad', html: `<b>${pjLate.length}</b> milestone${pjLate.length === 1 ? '' : 's'} past its date` });
   else if (pjSoon.length) lines.push({ kind: daysUntil(pjSoon[0].date) <= 7 ? 'warn' : '', html: `${esc(pjSoon[0].label)} <b>${esc(relDays(pjSoon[0].date))}</b>` });
   if (mtSoon.length) lines.push({ kind: '', html: `<b>${mtSoon.length}</b> meeting${mtSoon.length === 1 ? '' : 's'} this week` });
+  if (qaToday.some((x) => x.status === 'planned')) {
+    const n = qaToday.filter((x) => x.status === 'planned').length;
+    lines.push({ kind: 'warn', html: `<b>${n}</b> class${n === 1 ? '' : 'es'} to observe` });
+  }
+  if (qaLate.length) lines.push({ kind: 'bad', html: `<b>${qaLate.length}</b> observation${qaLate.length === 1 ? '' : 's'} not written up` });
   if (!lines.length) lines.push({ kind: 'good', html: 'Nothing owed, nothing overdue. Rare and good.' });
 
   topbar(' ');
@@ -7156,6 +7526,17 @@ function renderToday(view) {
           <span class="pill warn">open</span></div>`).join('')}</div>`
         : emptyState('Nothing outstanding', 'Tasks you take on in a 1-1 appear here until you tick them off.'), { flush: true })}
     </div>
+
+    ${qaToday.length || qaLate.length ? panel('Classes to observe', `<div class="list">
+      ${qaToday.map((x) => `<div class="list-row click" data-goto="work/qa">
+        <span class="pill num">${x.n}</span>
+        <div class="grow"><div class="t ${x.status === 'done' ? 'done-text' : ''}">${esc(x.name)}</div>
+          <div class="m">${esc(x.branch)}${x.group ? ' · ' + esc(x.group) : ''}</div></div>
+        <span class="pill ${x.status === 'done' ? 'ok' : x.status === 'missed' ? 'bad' : 'warn'}">${esc(x.status === 'done' ? 'written up' : x.status)}</span></div>`).join('')}
+      ${qaLate.slice(0, 5).map((x) => `<div class="list-row click" data-goto="work/qa">
+        <div class="grow"><div class="t trunc">${esc(x.name)}</div><div class="m">${esc(fmtDate(x.date))} · ${esc(x.branch)}</div></div>
+        <span class="pill bad">not written up</span></div>`).join('')}
+    </div>`, { flush: true, sub: qaBranchOn(iso) || '', actions: `<button class="btn sm ghost" data-goto="work/qa">QA plan</button>` }) : ''}
 
     ${mtSoon.length ? panel('Meetings this week', `<div class="list">${mtSoon.slice(0, 8).map((m) => `
       <div class="list-row click" data-goto="work/meetings/${attr(m.id)}">

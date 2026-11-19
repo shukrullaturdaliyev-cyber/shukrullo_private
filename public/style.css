@@ -910,3 +910,36 @@ dialog.palette {
 .mchip.on .my, .mchip.on .num { color: var(--accent-ink); opacity: .72; }
 a.covlab { text-decoration: none; }
 a.covlab:hover { color: var(--tx); background: var(--s2); }
+
+/* ---------- the QA observation plan ---------- */
+.qaweek { margin-bottom: 18px; }
+.qaweek:last-child { margin-bottom: 0; }
+.qaweek > h4 {
+  font-family: var(--ui); font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .12em; color: var(--tx-3); margin: 0 0 6px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--line);
+}
+.qaday {
+  display: grid; grid-template-columns: 112px 92px 1fr; gap: 10px; align-items: center;
+  padding: 7px 0; border-bottom: 1px solid var(--line);
+}
+.qaday:last-child { border-bottom: 0; }
+.qaday.now { background: color-mix(in srgb, var(--accent) 9%, transparent); box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 9%, transparent); border-radius: 3px; }
+.qadate { font-family: var(--mono); font-size: 11.5px; color: var(--tx-2); }
+.qabranch { font-size: 11px; color: var(--tx-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qaslots { display: flex; flex-wrap: wrap; gap: 5px; }
+.qachip {
+  font: inherit; font-size: 11.5px; cursor: pointer; white-space: nowrap;
+  background: var(--s2); border: 1px solid var(--line-2); color: var(--tx-2);
+  border-radius: 999px; padding: 4px 11px;
+}
+.qachip:hover { border-color: var(--accent); color: var(--tx); }
+.qachip .g { font-family: var(--mono); font-size: 10px; color: var(--tx-3); }
+.qachip.ok { background: color-mix(in srgb, var(--ok) 16%, var(--s2)); border-color: var(--ok); color: var(--tx); }
+.qachip.bad { background: color-mix(in srgb, var(--bad) 16%, var(--s2)); border-color: var(--bad); color: var(--tx); }
+.qachip.open { border-style: dashed; color: var(--tx-3); background: transparent; }
+
+@media (max-width: 760px) {
+  .qaday { grid-template-columns: 1fr; gap: 4px; padding: 10px 0; }
+  .qabranch { font-size: 10.5px; }
+}
