@@ -3,8 +3,9 @@
 A private, single-user operations dashboard with two faces and a set of shared modules.
 
 * **Work** — head of the Math department at an SAT-prep school: overview, teacher 1-1 journals read either by person
-  or by month, a meeting log, a project board, a department page (CSS rates, exam results, class observations, the
-  group register), a monthly and weekly report for top management, tasks, CSV report engines.
+  or by month, a meeting log, a project board, a day-by-day QA observation plan, a department page (CSS rates, exam
+  results, class observations, the group register), a monthly and weekly report for top management, tasks, CSV
+  report engines.
 * **CAU** (Central Asian University) — overview, timetable, courses with their own folders of files, tasks, lecture notes (*Konspekty*).
 * **Everywhere** — a Today page across both faces, a native calendar with two-way Google sync, habits, goals, a
   weekly review page, an Obsidian-style note vault, a health log, finances, settings.
@@ -282,6 +283,32 @@ off the teacher register, plus free text for anyone outside it), the agenda, the
 are gathered at the top of the log and on the Work overview, so nothing agreed in a room quietly disappears.
 
 The log is grouped by month, with anything still ahead of you shown first.
+
+### The QA observation plan
+
+`Work → QA plan` is the one project that would not fit the board: a day-by-day schedule of individual classes, each
+of which needs its own write-up. It holds the cycle's dates, every class slot, and the teachers still waiting on
+groups.
+
+**Today comes first.** The page opens on today's branch and its classes, each with a *Write feedback* button. If
+nothing is scheduled today it shows the next day that has something on it.
+
+**Then what is not written up.** Any class whose day has passed and still has nothing on the record is listed
+separately, with how late it is. That list is the point of the page.
+
+**The plan** is the whole cycle, week by week, one row per day: the date, the branch, and the classes as chips —
+green written up, red missed, faint an open slot. Pressing any chip opens its write-up; pressing an open slot fills
+it with a teacher who was waiting on groups.
+
+**A write-up** carries the five department criteria scored one to five, what went well, what to improve, and the one
+thing agreed with the teacher. Completed write-ups count as class observations everywhere else on the desk — the
+teacher's own page, the department page and the monthly report — so the same observation is never entered twice.
+
+Open slots are deliberate: they are kept in the plan so adding a teacher later does not move anything else. The
+page also carries the observation windows, so the timing rules do not have to be remembered.
+
+The plan shows on the project board as the card for its project, reading its progress from the plan rather than from
+milestones, and the project's own page keeps its notes and updates as any other project does.
 
 ### The report for top management
 
