@@ -293,8 +293,9 @@ groups.
 **Today comes first.** The page opens on today's branch and its classes, each with a *Write feedback* button. If
 nothing is scheduled today it shows the next day that has something on it.
 
-**Then what is not written up.** Any class whose day has passed and still has nothing on the record is listed
-separately, with how late it is. That list is the point of the page.
+**Then what is not written up.** Two things land here: a class whose day has passed with nothing recorded, and a
+class ticked as observed that still has no words on it. A tick is not a write-up, so marking a class done does not
+get it off this list — only writing something does. That list is the point of the page.
 
 **The plan** is the whole cycle, week by week, one row per day: the date, the branch, and the classes as chips —
 green written up, red missed, faint an open slot. Pressing any chip opens its write-up; pressing an open slot fills

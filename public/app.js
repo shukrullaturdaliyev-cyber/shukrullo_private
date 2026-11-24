@@ -3372,10 +3372,14 @@ const qaFilled = () => qaSlots().filter((s) => s.name);
 const qaOpen = () => qaSlots().filter((s) => !s.name);
 const qaDone = () => qaSlots().filter((s) => s.status === 'done');
 const qaMissed = () => qaSlots().filter((s) => s.status === 'missed');
-const qaWritten = () => qaDone().filter((s) => (s.went || '').trim() || (s.improve || '').trim() || (s.notes || '').trim());
-/** Planned, the day has passed, still nothing written. The daily nag. */
+/** A class has been written up when there are words on it, not merely a tick. */
+const qaHasWords = (s) => !!((s.went || '').trim() || (s.improve || '').trim() || (s.notes || '').trim());
+const qaWritten = () => qaDone().filter(qaHasWords);
+/** The daily nag: a class whose day has passed with nothing recorded, and a
+ *  class marked observed that still has no words on it. Ticking it done is
+ *  not the same as writing it up, so both stay on the list. */
 const qaBehind = () => qaFilled()
-  .filter((s) => s.status === 'planned' && s.date < todayISO())
+  .filter((s) => (s.status === 'planned' && s.date < todayISO()) || (s.status === 'done' && !qaHasWords(s)))
   .sort((a, b) => a.date.localeCompare(b.date) || a.n - b.n);
 const qaOn = (iso) => qaSlots().filter((s) => s.date === iso).sort((a, b) => a.n - b.n);
 const qaDates = () => [...new Set(qaSlots().map((s) => s.date))].sort();
@@ -3572,7 +3576,7 @@ function renderQA(view) {
   });
 
   const lines = [];
-  if (behind.length) lines.push({ kind: 'bad', html: `<b>${behind.length}</b> class${behind.length === 1 ? '' : 'es'} observed but not written up` });
+  if (behind.length) lines.push({ kind: 'bad', html: `<b>${behind.length}</b> class${behind.length === 1 ? '' : 'es'} without a write-up` });
   if (todays.filter((s) => s.name && s.status === 'planned').length) {
     lines.push({ kind: 'warn', html: `<b>${todays.filter((s) => s.name && s.status === 'planned').length}</b> to observe ${showDay === today ? 'today' : 'on ' + fmtDate(showDay)}` });
   }
@@ -3598,10 +3602,11 @@ function renderQA(view) {
       <div class="list-row">
         <div class="grow"><div class="t">${esc(s.name)}</div>
           <div class="m">${esc(fmtDate(s.date))} · ${esc(s.branch)} · class ${s.n}${s.group ? ' · ' + esc(s.group) : ''}</div></div>
-        <span class="pill bad">${esc(relDays(s.date))}</span>
+        <span class="pill ${s.status === 'done' ? 'warn' : 'bad'}">${s.status === 'done' ? 'observed, no words' : 'not recorded'}</span>
+        <span class="pill">${esc(relDays(s.date))}</span>
         <button class="btn primary sm" data-fb="${attr(s.id)}">Write it up</button>
       </div>`).join('')}</div>`,
-      { flush: true, sub: 'The day has passed and there is still nothing on the record' }) : ''}
+      { flush: true, sub: 'A tick is not a write-up — these stay here until there are words on them' }) : ''}
 
     ${panel('The plan', qaWeeks().map(({ week, days }) => {
       const wdone = days.flatMap(qaOn).filter((s) => s.status === 'done').length;
